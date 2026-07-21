@@ -1,0 +1,31 @@
+# Valuation assumptions — PT Bank Central Asia Tbk (BBCA)
+# Single source of truth: comps (forward P/E), valuation models, sensitivity
+# tables, and the report skeleton all read from this file.
+# SAMPLE starting values — review every number before publishing.
+
+ticker: BBCA
+company: PT Bank Central Asia Tbk
+rating: null                  # BUY / HOLD / SELL — analyst judgment, set by hand
+last_updated: 2026-07-21
+
+cost_of_equity:
+  risk_free_pct: 6.4          # Indonesia 10Y government bond yield
+  equity_risk_premium_pct: 5.0
+  beta: 0.85                  # low-beta franchise
+  coe_override_pct: null      # set a number to bypass CAPM
+
+residual_income:
+  forecast_years: 5
+  roe_start_pct: 21.0         # year-1 ROE
+  roe_terminal_pct: 20.0      # ROE by final forecast year and beyond
+  payout_ratio_pct: 70.0      # dividend payout during explicit horizon
+  terminal_growth_pct: 5.5    # nominal growth beyond horizon (< COE)
+
+# Optional overrides / analyst estimates
+bvps_override: null           # IDR per share; null → latest BVPS from cache
+forward_eps: 491              # analyst FY26E EPS (IDR) — own estimate, not consensus
+
+notes: >
+  Premium franchise: highest CASA and ROE in the sector, lowest cost of
+  credit. Question for the thesis: how much of the quality premium is
+  already in the multiple.

@@ -1,0 +1,14 @@
+date,bi_rate_pct,usdidr,idn_10y_pct,source
+2024-01-31,6.00,15780,6.60,SAMPLE — verify vs BI/Bloomberg
+2024-04-30,6.25,16250,7.10,SAMPLE — verify vs BI/Bloomberg
+2024-07-31,6.25,16260,6.95,SAMPLE — verify vs BI/Bloomberg
+2024-10-31,6.00,15700,6.75,SAMPLE — verify vs BI/Bloomberg
+2024-12-31,6.00,16100,7.00,SAMPLE — verify vs BI/Bloomberg
+2025-01-31,5.75,16300,7.05,SAMPLE — verify vs BI/Bloomberg
+2025-04-30,5.75,16850,6.95,SAMPLE — verify vs BI/Bloomberg
+2025-05-31,5.50,16450,6.85,SAMPLE — verify vs BI/Bloomberg
+2025-07-31,5.25,16350,6.60,SAMPLE — verify vs BI/Bloomberg
+2025-09-30,5.00,16500,6.45,SAMPLE — verify vs BI/Bloomberg
+2025-12-31,4.75,16550,6.30,SAMPLE — verify vs BI/Bloomberg
+2026-03-31,4.75,16480,6.35,SAMPLE — verify vs BI/Bloomberg
+2026-06-30,4.75,16400,6.40,SAMPLE — verify vs BI/Bloomberg

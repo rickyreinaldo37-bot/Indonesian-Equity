@@ -1,0 +1,31 @@
+# Valuation assumptions — PT Bank Negara Indonesia (Persero) Tbk (BBNI)
+# Single source of truth: comps (forward P/E), valuation models, sensitivity
+# tables, and the report skeleton all read from this file.
+# SAMPLE starting values — review every number before publishing.
+
+ticker: BBNI
+company: PT Bank Negara Indonesia (Persero) Tbk
+rating: null                  # BUY / HOLD / SELL — analyst judgment, set by hand
+last_updated: 2026-07-21
+
+cost_of_equity:
+  risk_free_pct: 6.4          # Indonesia 10Y government bond yield
+  equity_risk_premium_pct: 5.0
+  beta: 1.05                  # SoE corporate book, higher funding beta
+  coe_override_pct: null      # set a number to bypass CAPM
+
+residual_income:
+  forecast_years: 5
+  roe_start_pct: 13.0         # year-1 ROE
+  roe_terminal_pct: 13.5      # gradual transformation-led improvement
+  payout_ratio_pct: 60.0      # dividend payout during explicit horizon
+  terminal_growth_pct: 4.5    # nominal growth beyond horizon (< COE)
+
+# Optional overrides / analyst estimates
+bvps_override: null           # IDR per share; null → latest BVPS from cache
+forward_eps: 601              # analyst FY26E EPS (IDR) — own estimate, not consensus
+
+notes: >
+  Turnaround/value story: trades nearest to book with the lowest ROE of the
+  four. Thesis hinges on NIM stabilisation and whether transformation can
+  close the ROE gap to peers.
