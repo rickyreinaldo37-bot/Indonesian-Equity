@@ -2,8 +2,8 @@
 
 A Python research-production system for sell-side-style coverage of the four
 Indonesian large-cap banks — **BBCA, BBRI, BMRI, BBNI**. It automates data
-collection, comps, valuation, charts, and report scaffolding so the analyst
-can focus on thesis, writing, and judgment.
+collection, comps, valuation, charts, **net foreign flow monitoring**, and
+report scaffolding so the analyst can focus on thesis, writing, and judgment.
 
 The system deliberately does **not** write the investment thesis, pick
 ratings, or generate trading signals — those stay human.
@@ -49,15 +49,17 @@ The banners disappear only when nothing sample-tagged remains.
 ## How it fits together
 
 ```
-data/manual/*.csv        analyst-transcribed quarterly bank metrics  ─┐
-data/manual/macro.csv    BI rate, USD/IDR, Indonesia 10Y             │ source of
-assumptions/*.yaml       valuation inputs, one file per bank         │ truth
-data/cache/              yfinance pulls (parquet/json), source-tagged ┘
+data/manual/*.csv               analyst-transcribed quarterly bank metrics ─┐
+data/manual/foreign_flow/*.csv  net foreign flow export (optional)          │ source
+data/manual/macro.csv           BI rate, USD/IDR, Indonesia 10Y             │ of
+assumptions/*.yaml              valuation inputs, one file per bank         │ truth
+data/cache/                     yfinance + flow pulls, source-tagged        ┘
         │
         ├── src/fetch.py      F1  loaders + schema validation (fails loudly)
         ├── src/comps.py      F2  sector comps → styled Excel workbook
         ├── src/valuation.py  F3  residual income (primary) + DDM cross-check
         ├── src/charts.py     F4  house-style PNG exhibits @300dpi
+        ├── src/flows.py          net foreign flow analytics (sums, corr)
         └── src/report.py     F5  initiation skeleton (docx / markdown)
 ```
 
@@ -70,9 +72,9 @@ block, and the report skeleton all update consistently. No manual edits.
 
 | Command | Output |
 |---|---|
-| `python comps.py` | `output/comps_YYYY-MM-DD.xlsx` — Summary tab (frozen headers, number formats, conditional formatting vs sector median), one detail tab per bank, Notes tab |
-| `python -m src.charts` | `output/charts/sector/` (rebased price, ROE vs P/B with OLS fit, NIM trend, loan growth) and `output/charts/<TICKER>/pb_band.png` (±1σ/±2σ of 5Y history) |
-| `python make_report.py <TICKER> [--format md]` | `output/reports/<TICKER>_initiation_skeleton_YYYY-MM-DD.docx` — cover block (rating placeholder, RI price target, upside), thesis/overview/risks placeholders, auto-filled valuation section + sensitivity, embedded exhibits, financials appendix, disclosures |
+| `python comps.py` | `output/comps_YYYY-MM-DD.xlsx` — Summary tab (frozen headers, number formats, conditional formatting vs sector median **and on 3M net foreign flow**), one detail tab per bank (incl. a foreign-flow monitor block), Notes tab |
+| `python -m src.charts` | `output/charts/sector/` (rebased price, ROE vs P/B with OLS fit, NIM trend, loan growth, **cumulative net foreign flow by bank**) and `output/charts/<TICKER>/` (`pb_band.png` ±1σ/±2σ of 5Y history, **`foreign_flow.png` price vs cumulative flow**) |
+| `python make_report.py <TICKER> [--format md]` | `output/reports/<TICKER>_initiation_skeleton_YYYY-MM-DD.docx` — cover block (rating placeholder, RI price target, upside), thesis/overview/risks placeholders, auto-filled valuation section + sensitivity, **foreign flow monitor**, embedded exhibits, financials appendix, disclosures |
 
 ## Valuation methodology
 
@@ -94,14 +96,52 @@ Run the math tests (hand-calculated fixtures, documented in-line):
 python -m pytest tests/ -q
 ```
 
+## Net foreign flow
+
+Indonesian blue chips — the big four banks especially — trade with foreign
+positioning: cumulative net foreign flow tracks their price cycles closely.
+The engine treats daily net foreign flow (net foreign buy value, IDR bn) as
+a first-class input.
+
+**Source hierarchy** (highest priority wins, mirroring the rest of the
+engine):
+
+1. `data/manual/foreign_flow/<TICKER>.csv` — an analyst-exported series
+   from a broker terminal, RTI, Stockbit, or the IDX daily trading summary.
+   If present it is the source of truth. Columns: `date`, `source`, and
+   either `net_foreign_idr_bn` **or** `foreign_buy_idr_bn` +
+   `foreign_sell_idr_bn` (net is derived). Values are IDR **billions**; a
+   loud unit sanity-check rejects anything above ±20,000 bn/day.
+2. A best-effort pull of recent days from the IDX daily trading summary
+   endpoint (unofficial; convenience only — parsed values are
+   sanity-checked and only fill dates missing from the cache).
+3. The existing cache (including the shipped SAMPLE seed).
+
+**What it produces:**
+
+- Horizon sums (1W / 1M / 3M / 6M / YTD / 12M) per bank, in the comps
+  Summary tab (with conditional formatting), each bank's detail tab, and the
+  report's foreign flow monitor section.
+- Flow/return correlation — Pearson(daily net flow, daily return) over the
+  trailing year, daily and weekly. This is **contemporaneous co-movement, a
+  diagnostic — not a predictive signal**, and every output labels it as such.
+- Two exhibits: per-bank price vs cumulative flow (stacked panels, never a
+  dual-axis chart), and a sector cumulative-flow comparison.
+
+Analytics live in `src/flows.py` (pure functions, unit-tested against hand
+fixtures); the flow cache and CSV/IDX import live in `src/fetch.py`.
+
 ## Quarterly update workflow
 
 1. Results season: add one row per bank to `data/manual/<TICKER>.csv` from
    the investor deck (validation fails loudly on missing/malformed fields).
-2. `python refresh.py` — pulls latest prices/fundamentals, revalidates.
-3. Revisit `assumptions/<TICKER>.yaml` if the print changes your view.
-4. `python comps.py && python -m src.charts` — refreshed exhibits.
-5. `python make_report.py <TICKER>` for any report you're writing; fill in
+2. Drop your latest net-foreign-flow export into
+   `data/manual/foreign_flow/<TICKER>.csv` (optional but recommended for
+   real data — otherwise the engine tries the IDX endpoint, then the cache).
+3. `python refresh.py` — pulls prices/fundamentals/flow, revalidates.
+4. Revisit `assumptions/<TICKER>.yaml` if the print changes your view.
+5. `python comps.py && python -m src.charts` — refreshed exhibits.
+6. `python make_report.py <TICKER>` for any report you're writing; fill in
    the qualitative sections.
 
 ## Configuration
@@ -115,9 +155,10 @@ house colors/markers: `src/config.py`.
 ├── refresh.py            # one-command data refresh
 ├── comps.py              # comps workbook entry point
 ├── make_report.py        # report skeleton entry point
-├── src/                  # engine modules (config, fetch, comps, valuation, charts, report)
+├── src/                  # engine modules (config, fetch, comps, valuation, charts, flows, report)
 ├── data/manual/          # analyst-maintained inputs (source of truth)
-├── data/cache/           # yfinance cache, source-tagged (sample seed ships here)
+│   └── foreign_flow/     # optional net-foreign-flow CSV exports per bank
+├── data/cache/           # yfinance + flow cache, source-tagged (sample seed ships here)
 ├── assumptions/          # per-bank valuation assumptions (yaml)
 ├── scripts/make_sample_seed.py   # reinstall the offline sample cache
 ├── tests/                # valuation + schema validation tests

@@ -336,6 +336,203 @@ def manual_is_sample(ticker: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Net foreign flow (daily net foreign buy/sell value per stock, IDR bn)
+# ---------------------------------------------------------------------------
+# Priority of sources, mirroring the rest of the engine:
+#   1. data/manual/foreign_flow/<TICKER>.csv — analyst-exported series
+#      (broker terminal / RTI / Stockbit / IDX daily trading summary export).
+#      If present it IS the series (source of truth), validated and imported
+#      into the cache on refresh.
+#   2. Best-effort fetch of recent days from the IDX daily trading summary
+#      endpoint (idx.co.id). Convenience only — the endpoint is unofficial
+#      and may be unreachable; parsed values are sanity-checked and the pull
+#      only fills dates missing from the cache.
+#   3. Whatever the cache already holds (including the SAMPLE seed).
+
+FLOW_REQUIRED_COLUMNS = ["date", "net_foreign_idr_bn", "source"]
+# One-day |net flow| beyond this is treated as a parsing/unit error.
+FLOW_SANITY_LIMIT_BN = 20_000.0  # IDR 20 tn
+
+IDX_SUMMARY_URL = ("https://www.idx.co.id/primary/TradingSummary/"
+                   "GetStockSummary?length=9999&start=0&date={date}")
+
+
+def _flow_path(ticker: str) -> Path:
+    return config.FLOW_CACHE_DIR / f"{ticker}.parquet"
+
+
+def _flow_meta_path(ticker: str) -> Path:
+    return config.FLOW_CACHE_DIR / f"{ticker}.meta.json"
+
+
+def flow_source(ticker: str) -> str:
+    path = _flow_meta_path(ticker)
+    if not path.exists():
+        return "missing"
+    return json.loads(path.read_text()).get("source", "unknown")
+
+
+def _write_flow_cache(ticker: str, df: pd.DataFrame, source: str) -> None:
+    df = df.sort_index()
+    df.index.name = "date"
+    df.to_parquet(_flow_path(ticker))
+    _flow_meta_path(ticker).write_text(json.dumps(
+        {"source": source,
+         "fetched_at": dt.datetime.now().isoformat(timespec="seconds")},
+        indent=2))
+
+
+def load_foreign_flow(ticker: str) -> pd.DataFrame:
+    """Cache-only reader: DataFrame indexed by date with column
+    net_foreign_idr_bn (positive = net foreign buying)."""
+    path = _flow_path(ticker)
+    if not path.exists():
+        raise RuntimeError(
+            f"No cached foreign flow for {ticker}. Run `python refresh.py` "
+            f"(or scripts/make_sample_seed.py) first.")
+    df = pd.read_parquet(path)
+    df.index = pd.to_datetime(df.index)
+    return df.sort_index()
+
+
+def _load_manual_flow_csv(ticker: str) -> pd.DataFrame | None:
+    """Validate + normalize an analyst-provided flow CSV, if present.
+
+    Accepts either net_foreign_idr_bn directly, or foreign_buy_idr_bn and
+    foreign_sell_idr_bn from which net is derived.
+    """
+    path = config.MANUAL_FLOW_DIR / f"{ticker}.csv"
+    if not path.exists():
+        return None
+    df = pd.read_csv(path)
+    has_net = "net_foreign_idr_bn" in df.columns
+    has_legs = {"foreign_buy_idr_bn", "foreign_sell_idr_bn"} <= set(df.columns)
+    if "date" not in df.columns or "source" not in df.columns or not (
+            has_net or has_legs):
+        raise ManualDataError(
+            f"{path}: required columns are date, source and either "
+            f"net_foreign_idr_bn or foreign_buy_idr_bn + "
+            f"foreign_sell_idr_bn")
+    if not has_net:
+        df["net_foreign_idr_bn"] = (
+            pd.to_numeric(df["foreign_buy_idr_bn"], errors="coerce")
+            - pd.to_numeric(df["foreign_sell_idr_bn"], errors="coerce"))
+    df["date"] = pd.to_datetime(df["date"])
+    df["net_foreign_idr_bn"] = pd.to_numeric(df["net_foreign_idr_bn"],
+                                             errors="coerce")
+    if df["net_foreign_idr_bn"].isna().any():
+        bad = df[df["net_foreign_idr_bn"].isna()]["date"].dt.date.tolist()
+        raise ManualDataError(
+            f"{path}: missing/non-numeric net flow on {bad[:5]}"
+            + ("…" if len(bad) > 5 else ""))
+    absurd = df[df["net_foreign_idr_bn"].abs() > FLOW_SANITY_LIMIT_BN]
+    if len(absurd):
+        raise ManualDataError(
+            f"{path}: |net flow| above {FLOW_SANITY_LIMIT_BN:,.0f} IDR bn on "
+            f"{absurd['date'].dt.date.tolist()[:5]} — check units "
+            f"(file must be IDR *billions*)")
+    out = df.set_index("date")[["net_foreign_idr_bn"]].sort_index()
+    return out[~out.index.duplicated(keep="last")]
+
+
+def _fetch_idx_flows_for_day(day: dt.date) -> dict[str, float] | None:
+    """Best effort: one day of net foreign flow for all stocks from the IDX
+    trading summary. Returns {ticker: net_idr_bn} or None on any failure."""
+    try:
+        import requests
+        url = IDX_SUMMARY_URL.format(date=day.strftime("%Y%m%d"))
+        resp = requests.get(url, timeout=20, headers={
+            "User-Agent": "Mozilla/5.0 (research; IDX banks coverage)",
+            "Accept": "application/json",
+        })
+        if resp.status_code != 200:
+            return None
+        rows = resp.json().get("data") or []
+        out: dict[str, float] = {}
+        for row in rows:
+            low = {str(k).lower(): v for k, v in row.items()}
+            code = str(low.get("stockcode") or low.get("code") or "").upper()
+            if code not in config.UNIVERSE:
+                continue
+            buy = low.get("foreignbuy")
+            sell = low.get("foreignsell")
+            if buy is None or sell is None:
+                continue
+            net_bn = (float(buy) - float(sell)) / 1e9  # IDR → IDR bn
+            if abs(net_bn) > FLOW_SANITY_LIMIT_BN:
+                return None  # unit mismatch — discard the whole day
+            out[code] = round(net_bn, 2)
+        return out or None
+    except Exception:
+        return None
+
+
+def fetch_foreign_flow(tickers: list[str] | None = None,
+                       max_backfill_days: int = 30) -> dict[str, pd.DataFrame]:
+    """Refresh the foreign-flow cache per the source priority above."""
+    tickers = tickers or config.TICKERS
+    out: dict[str, pd.DataFrame] = {}
+
+    manual: dict[str, pd.DataFrame] = {}
+    for ticker in tickers:
+        df = _load_manual_flow_csv(ticker)
+        if df is not None:
+            _write_flow_cache(ticker, df, config.SOURCE_MANUAL_CSV)
+            print(f"  {ticker}: imported {len(df):,} rows from manual CSV")
+            manual[ticker] = df
+            out[ticker] = df
+    remaining = [t for t in tickers if t not in manual]
+
+    if remaining:
+        cached: dict[str, pd.DataFrame | None] = {}
+        for ticker in remaining:
+            try:
+                cached[ticker] = load_foreign_flow(ticker)
+            except RuntimeError:
+                cached[ticker] = None
+        # Which recent business days are missing from every cache?
+        today = dt.date.today()
+        candidates = pd.bdate_range(
+            today - dt.timedelta(days=max_backfill_days), today).date
+        have = set()
+        ref = next((c for c in cached.values() if c is not None), None)
+        if ref is not None:
+            have = set(ref.index.date)
+        missing = [d for d in candidates if d not in have]
+        fetched_days: dict[dt.date, dict[str, float]] = {}
+        for day in missing:
+            day_data = _fetch_idx_flows_for_day(day)
+            if day_data is None:
+                if not fetched_days:
+                    break  # endpoint unreachable — stop trying
+                continue  # holiday / empty day
+            fetched_days[day] = day_data
+        for ticker in remaining:
+            base = cached[ticker]
+            if fetched_days:
+                add = pd.DataFrame({
+                    "net_foreign_idr_bn": {
+                        pd.Timestamp(d): v[ticker]
+                        for d, v in fetched_days.items() if ticker in v}})
+                merged = (add if base is None
+                          else pd.concat([base, add[~add.index.isin(base.index)]]))
+                _write_flow_cache(ticker, merged, config.SOURCE_IDX)
+                print(f"  {ticker}: +{len(add)} days from IDX summary "
+                      f"({len(merged):,} total)")
+                out[ticker] = merged
+            elif base is not None:
+                print(f"  {ticker}: IDX endpoint unavailable — serving cache "
+                      f"({len(base):,} rows, source={flow_source(ticker)})")
+                out[ticker] = base
+            else:
+                raise RuntimeError(
+                    f"No foreign flow data for {ticker}: no manual CSV, IDX "
+                    f"unreachable, no cache. Run scripts/make_sample_seed.py "
+                    f"or drop an export into data/manual/foreign_flow/.")
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Macro inputs
 # ---------------------------------------------------------------------------
 
@@ -378,6 +575,8 @@ class DataStatus:
     manual_quarters: int
     manual_latest: str
     manual_sample: bool
+    flow_rows: int
+    flow_source: str
 
 
 def data_status() -> list[DataStatus]:
@@ -386,6 +585,10 @@ def data_status() -> list[DataStatus]:
         px = load_prices(ticker)
         fund = load_fundamentals(ticker)
         manual = load_manual_metrics(ticker)
+        try:
+            flow_rows = len(load_foreign_flow(ticker))
+        except RuntimeError:
+            flow_rows = 0
         rows.append(DataStatus(
             ticker=ticker,
             price_rows=len(px),
@@ -396,6 +599,8 @@ def data_status() -> list[DataStatus]:
             manual_quarters=len(manual),
             manual_latest=str(manual.iloc[-1]["period"]),
             manual_sample=manual_is_sample(ticker),
+            flow_rows=flow_rows,
+            flow_source=flow_source(ticker),
         ))
     return rows
 
@@ -405,6 +610,8 @@ def any_sample_data() -> bool:
     used to put an unmissable banner on every output."""
     for ticker in config.TICKERS:
         if price_source(ticker) == config.SOURCE_SAMPLE:
+            return True
+        if flow_source(ticker) == config.SOURCE_SAMPLE:
             return True
         try:
             if load_fundamentals(ticker).get("source") == config.SOURCE_SAMPLE:

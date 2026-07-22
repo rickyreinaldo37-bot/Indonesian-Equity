@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.ticker import FuncFormatter
 
-from src import config, fetch
+from src import config, fetch, flows
 
 # House ink & surface tokens (text never wears series colors)
 INK = "#0b0b0b"
@@ -317,6 +317,110 @@ def chart_pb_band(ticker: str, years: int = 5) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Foreign flow exhibits
+# ---------------------------------------------------------------------------
+
+def _new_stacked():
+    """Two panels sharing the x-axis (house rule: never a dual-axis chart —
+    two measures of different scale get two aligned panels)."""
+    fig, (ax_top, ax_bot) = plt.subplots(
+        2, 1, sharex=True, figsize=(9.0, 6.2),
+        gridspec_kw={"height_ratios": [3, 2], "hspace": 0.12})
+    fig.subplots_adjust(top=0.87, bottom=0.10, left=0.07, right=0.93)
+    for ax in (ax_top, ax_bot):
+        ax.grid(axis="y", color=GRID, lw=0.8)
+        ax.grid(False, axis="x")
+        ax.set_axisbelow(True)
+        for side in ("top", "right", "left"):
+            ax.spines[side].set_visible(False)
+        ax.tick_params(length=0)
+    return fig, ax_top, ax_bot
+
+
+def chart_foreign_flow(ticker: str, years: int = 2) -> Path:
+    """Price vs cumulative net foreign flow — the IDX blue-chip exhibit:
+    these names trade with foreign money."""
+    apply_house_style()
+    fig, ax_px, ax_fl = _new_stacked()
+    info = config.UNIVERSE[ticker]
+
+    px = fetch.load_prices(ticker)["Close"].dropna()
+    flow = flows.flow_series(ticker)
+    end = min(px.index[-1], flow.index[-1])
+    start = end - pd.DateOffset(years=years)
+    px = px[(px.index >= start) & (px.index <= end)]
+    cum_tn = flows.cumulative(flow, pd.Timestamp(start)) / 1000.0
+    cum_tn = cum_tn[cum_tn.index <= end]
+
+    ax_px.plot(px.index, px.values, color=info["color"], lw=2.0, zorder=3)
+    ax_px.set_ylabel("Price (IDR)")
+    ax_px.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:,.0f}"))
+    ax_px.annotate(f"{px.iloc[-1]:,.0f}",
+                   xy=(mdates.date2num(px.index[-1]), float(px.iloc[-1])),
+                   xytext=(6, 0), textcoords="offset points", fontsize=8,
+                   fontweight="bold", color=INK, va="center",
+                   annotation_clip=False)
+
+    ax_fl.plot(cum_tn.index, cum_tn.values, color=info["color"], lw=2.0,
+               zorder=3)
+    ax_fl.fill_between(cum_tn.index, 0, cum_tn.values, color=info["color"],
+                       alpha=0.12, zorder=2)
+    ax_fl.axhline(0, color=SPINE, lw=1.0, zorder=1)
+    ax_fl.set_ylabel(f"Cum. net foreign flow\nsince {start:%b %Y} (IDR tn)")
+    ax_fl.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:+,.0f}"))
+    ax_fl.annotate(f"{cum_tn.iloc[-1]:+,.1f} tn",
+                   xy=(mdates.date2num(cum_tn.index[-1]),
+                       float(cum_tn.iloc[-1])),
+                   xytext=(6, 0), textcoords="offset points", fontsize=8,
+                   fontweight="bold", color=INK, va="center",
+                   annotation_clip=False)
+    ax_fl.xaxis.set_major_formatter(mdates.ConciseDateFormatter(
+        mdates.AutoDateLocator()))
+
+    c_d = flows.flow_return_correlation(flow, px, 1.0, "D")
+    c_w = flows.flow_return_correlation(flow, px, 1.0, "W")
+    _chrome(fig, f"{ticker} — price follows foreign money",
+            f"Close vs cumulative net foreign buy value  |  trailing-1Y "
+            f"corr(flow, return): {c_d:.2f} daily, {c_w:.2f} weekly",
+            _source_line() if fetch.any_sample_data() else
+            "IDX daily trading summary / broker exports, author calculations")
+    return _save(fig, config.CHART_DIR / ticker / "foreign_flow.png")
+
+
+def chart_foreign_flow_sector(years: int = 1) -> Path:
+    """Cumulative net foreign flow, all four banks, common window."""
+    apply_house_style()
+    fig, ax = _new_axes(legend_room=True)
+    series = {t: flows.flow_series(t) for t in config.TICKERS}
+    end = max(s.index[-1] for s in series.values())
+    start = end - pd.DateOffset(years=years)
+    ends: dict[str, tuple[float, float, str]] = {}
+    for ticker, flow in series.items():
+        cum = flows.cumulative(flow, pd.Timestamp(start)) / 1000.0
+        info = config.UNIVERSE[ticker]
+        ax.plot(cum.index, cum.values, color=info["color"], lw=2.2,
+                label=ticker, marker=info["marker"], markersize=5,
+                markevery=max(1, len(cum) // 14), zorder=3)
+        ends[ticker] = (mdates.date2num(cum.index[-1]), float(cum.iloc[-1]),
+                        f"{ticker} {cum.iloc[-1]:+,.1f}")
+    ax.axhline(0, color=SPINE, lw=1.0, zorder=1)
+    ax.set_ylabel(f"Cumulative net foreign flow since {start:%b %Y} (IDR tn)")
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:+,.0f}"))
+    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(
+        mdates.AutoDateLocator()))
+    span = mdates.date2num(end) - mdates.date2num(start)
+    ax.set_xlim(mdates.date2num(start), mdates.date2num(end) + span * 0.10)
+    _end_labels(ax, ends)
+    _legend_below(ax)
+    _chrome(fig, "Where is foreign money going?",
+            f"Cumulative net foreign buy value by bank, trailing "
+            f"{12 * years} months (+ = inflow)",
+            _source_line() if fetch.any_sample_data() else
+            "IDX daily trading summary / broker exports, author calculations")
+    return _save(fig, config.CHART_DIR / "sector" / "foreign_flow_cumulative.png")
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
@@ -327,9 +431,11 @@ def generate_all(comps_table: pd.DataFrame | None = None) -> dict[str, Path]:
         "roe_vs_pb": chart_roe_pb_scatter(comps_table),
         "nim_trend": chart_nim_trend(),
         "loan_growth_trend": chart_loan_growth_trend(),
+        "foreign_flow_sector": chart_foreign_flow_sector(),
     }
     for ticker in config.TICKERS:
         paths[f"pb_band_{ticker}"] = chart_pb_band(ticker)
+        paths[f"foreign_flow_{ticker}"] = chart_foreign_flow(ticker)
     return paths
 
 

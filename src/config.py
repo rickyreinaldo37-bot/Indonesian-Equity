@@ -71,18 +71,22 @@ DATA_DIR = ROOT / "data"
 CACHE_DIR = DATA_DIR / "cache"
 PRICE_CACHE_DIR = CACHE_DIR / "prices"
 FUND_CACHE_DIR = CACHE_DIR / "fundamentals"
+FLOW_CACHE_DIR = CACHE_DIR / "foreign_flow"
 MANUAL_DIR = DATA_DIR / "manual"
+MANUAL_FLOW_DIR = MANUAL_DIR / "foreign_flow"
 ASSUMPTIONS_DIR = ROOT / "assumptions"
 OUTPUT_DIR = ROOT / "output"
 CHART_DIR = OUTPUT_DIR / "charts"
 REPORT_DIR = OUTPUT_DIR / "reports"
 
-for _d in (PRICE_CACHE_DIR, FUND_CACHE_DIR, MANUAL_DIR, ASSUMPTIONS_DIR,
-           CHART_DIR, REPORT_DIR):
+for _d in (PRICE_CACHE_DIR, FUND_CACHE_DIR, FLOW_CACHE_DIR, MANUAL_DIR,
+           MANUAL_FLOW_DIR, ASSUMPTIONS_DIR, CHART_DIR, REPORT_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
 # Data-source tags stored in cache metadata. SAMPLE_SEED marks illustrative
-# placeholder data shipped with the repo; a successful yfinance refresh
-# overwrites it and re-tags the cache as YFINANCE.
+# placeholder data shipped with the repo; a successful refresh from a live
+# source overwrites it and re-tags the cache accordingly.
 SOURCE_YFINANCE = "yfinance"
+SOURCE_IDX = "idx.co.id"
+SOURCE_MANUAL_CSV = "manual_csv"
 SOURCE_SAMPLE = "SAMPLE_SEED"

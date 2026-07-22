@@ -25,7 +25,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
-from src import charts, config, fetch, valuation
+from src import charts, config, fetch, flows, valuation
 from src.comps import build_comps
 
 NAVY = RGBColor(0x1F, 0x38, 0x64)
@@ -309,10 +309,34 @@ def _valuation_section(doc, ctx: dict) -> None:
     _para(doc, "Shaded cell = base case.", size=8.5, color=GRAY)
 
 
+def _flow_section(doc, ticker: str, ctx: dict) -> None:
+    doc.add_heading("Foreign flow monitor", level=1)
+    fs = flows.bank_flow_summary(ticker)
+    h = fs["horizons_tn"]
+    _para(doc,
+          f"IDX blue chips trade with foreign money, and {ticker} is no "
+          f"exception: over the trailing year the correlation between daily "
+          f"net foreign flow and daily returns is {fs['corr_daily_1y']:.2f} "
+          f"({fs['corr_weekly_1y']:.2f} on weekly data). Net foreign flow is "
+          f"{h['3M']:+.1f} IDR tn over 3M and {h['12M']:+.1f} IDR tn over "
+          f"12M (data through {fs['last_date']}). Correlation is "
+          f"contemporaneous co-movement, not a forecasting claim.")
+    tbl = pd.DataFrame(
+        {lbl: [f"{h[lbl]:+.1f}"] for lbl in
+         ("1W", "1M", "3M", "6M", "YTD", "12M")},
+        index=["Net foreign flow (IDR tn)"])
+    _df_table(doc, tbl, index_header="")
+    _para(doc, "[TO WRITE — interpret positioning: who has been "
+               "accumulating/distributing, and what would turn the flow.]",
+          color=RED)
+
+
 def _exhibits_section(doc, ticker: str, ctx: dict) -> None:
     doc.add_heading("Key exhibits", level=1)
     order = [
         (f"pb_band_{ticker}", None),
+        (f"foreign_flow_{ticker}", None),
+        ("foreign_flow_sector", None),
         ("price_rebased", None),
         ("roe_vs_pb", None),
         ("nim_trend", None),
@@ -387,6 +411,7 @@ def build_docx(ticker: str) -> str:
                "management, ownership.]", color=RED)
 
     _valuation_section(doc, ctx)
+    _flow_section(doc, ticker, ctx)
     _exhibits_section(doc, ticker, ctx)
     _financials_section(doc, ticker, ctx)
 
@@ -401,8 +426,9 @@ def build_docx(ticker: str) -> str:
     _para(doc, "Data: Yahoo Finance via yfinance (prices, financial "
                "statements); company quarterly investor presentations "
                "(bank-specific ratios, transcribed by the analyst); "
-               "Bank Indonesia / market data (macro). Forward EPS estimates "
-               "are the analyst's own — no consensus feed is used.",
+               "IDX daily trading summary / broker exports (net foreign "
+               "flow); Bank Indonesia / market data (macro). Forward EPS "
+               "estimates are the analyst's own — no consensus feed is used.",
           size=8.5, color=GRAY)
     if ctx["sample"]:
         _para(doc, "THIS DRAFT WAS BUILT ON SAMPLE PLACEHOLDER DATA — "
@@ -478,9 +504,26 @@ def build_markdown(ticker: str) -> str:
         add(f"| {idx} | " + " | ".join(
             f_idr(v) if pd.notna(v) else "n.m." for v in r) + " |")
 
+    fs = flows.bank_flow_summary(ticker)
+    h = fs["horizons_tn"]
+    add("\n## Foreign flow monitor\n")
+    add(f"Trailing-1Y corr(daily net foreign flow, daily return): "
+        f"**{fs['corr_daily_1y']:.2f}** (weekly {fs['corr_weekly_1y']:.2f}). "
+        f"Data through {fs['last_date']}. Contemporaneous co-movement, not "
+        f"a forecast.\n")
+    add("| 1W | 1M | 3M | 6M | YTD | 12M |")
+    add("|---|---|---|---|---|---|")
+    add("| " + " | ".join(f"{h[lbl]:+.1f}" for lbl in
+                          ("1W", "1M", "3M", "6M", "YTD", "12M"))
+        + " |")
+    add("\n*Net foreign buy value, IDR tn. [TO WRITE — interpret "
+        "positioning.]*")
+
     add("\n## Key exhibits\n")
     rel = {
         f"pb_band_{ticker}": f"../charts/{ticker}/pb_band.png",
+        f"foreign_flow_{ticker}": f"../charts/{ticker}/foreign_flow.png",
+        "foreign_flow_sector": "../charts/sector/foreign_flow_cumulative.png",
         "price_rebased": "../charts/sector/price_rebased.png",
         "roe_vs_pb": "../charts/sector/roe_vs_pb.png",
         "nim_trend": "../charts/sector/nim_trend.png",

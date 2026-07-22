@@ -56,8 +56,23 @@ def main() -> int:
             seed_fundamentals()
             fetch.fetch_fundamentals(ticker)
 
-    # 3) Manual metrics ----------------------------------------------------
-    print("\n[3/4] Manual bank metrics (data/manual/<TICKER>.csv)")
+    # 3) Net foreign flow --------------------------------------------------
+    print("\n[3/5] Net foreign flow (manual CSV > IDX summary > cache)")
+    try:
+        fetch.fetch_foreign_flow(config.TICKERS)
+    except RuntimeError as exc:
+        if "no cache" in str(exc).lower() or "No foreign flow" in str(exc):
+            print("  No flow cache — installing SAMPLE seed …")
+            from scripts.make_sample_seed import seed_foreign_flow
+            seed_foreign_flow()
+        else:
+            raise
+    except fetch.ManualDataError as exc:
+        print(f"\nFOREIGN FLOW DATA ERROR\n{exc}", file=sys.stderr)
+        return 1
+
+    # 4) Manual metrics ----------------------------------------------------
+    print("\n[4/5] Manual bank metrics (data/manual/<TICKER>.csv)")
     try:
         for ticker in config.TICKERS:
             df = fetch.load_manual_metrics(ticker)
@@ -67,8 +82,8 @@ def main() -> int:
         print(f"\nMANUAL DATA ERROR\n{exc}", file=sys.stderr)
         return 1
 
-    # 4) Macro -------------------------------------------------------------
-    print("\n[4/4] Macro inputs (data/manual/macro.csv)")
+    # 5) Macro -------------------------------------------------------------
+    print("\n[5/5] Macro inputs (data/manual/macro.csv)")
     try:
         macro = fetch.load_macro()
     except fetch.ManualDataError as exc:
@@ -84,12 +99,14 @@ def main() -> int:
     print()
     _rule()
     print(f"{'':<6}{'px rows':>8} {'px last':>11} {'px source':>12} "
-          f"{'FY yrs':>7} {'fund source':>12} {'qtrs':>5} {'latest':>7}")
+          f"{'FY yrs':>7} {'fund source':>12} {'qtrs':>5} {'latest':>7} "
+          f"{'flow rows':>10} {'flow source':>12}")
     _rule()
     for s in fetch.data_status():
         print(f"{s.ticker:<6}{s.price_rows:>8,} {s.price_last:>11} "
               f"{s.price_source:>12} {s.fund_years:>7} {s.fund_source:>12} "
-              f"{s.manual_quarters:>5} {s.manual_latest:>7}")
+              f"{s.manual_quarters:>5} {s.manual_latest:>7} "
+              f"{s.flow_rows:>10,} {s.flow_source:>12}")
     _rule()
 
     if fetch.any_sample_data():

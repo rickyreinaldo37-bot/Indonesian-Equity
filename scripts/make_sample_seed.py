@@ -68,6 +68,12 @@ PRICE_ANCHORS: dict[str, list[tuple[str, float]]] = {
 DAILY_VOL = {"BBCA": 0.012, "BBRI": 0.017, "BMRI": 0.016, "BBNI": 0.017}
 AVG_VOLUME = {"BBCA": 85e6, "BBRI": 210e6, "BMRI": 110e6, "BBNI": 55e6}
 
+# Daily net foreign flow: typical one-day standard deviation, IDR bn, and the
+# flow/return correlation the sample series is engineered to exhibit (the
+# stylised fact for IDX blue chips: prices move with foreign money).
+FLOW_STD_BN = {"BBCA": 250.0, "BBRI": 300.0, "BMRI": 180.0, "BBNI": 90.0}
+FLOW_RET_CORR = 0.60
+
 # Approximate annual fundamentals, IDR. shares are split-adjusted and held
 # constant across history for simplicity (sample data only).
 SHARES = {"BBCA": 123.275e9, "BBRI": 151.559e9,
@@ -202,11 +208,46 @@ def seed_fundamentals(force: bool = False) -> None:
               f"({len(annual)} fiscal years)")
 
 
+def seed_foreign_flow(force: bool = False) -> None:
+    """Daily net foreign flow (IDR bn) engineered to correlate with the
+    seeded price returns at ~FLOW_RET_CORR, so the flow exhibits demonstrate
+    the foreign-flow/price relationship on sample data too."""
+    rng = np.random.default_rng(20260722)
+    out_dir = config.CACHE_DIR / "foreign_flow"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for ticker in config.TICKERS:
+        path = out_dir / f"{ticker}.parquet"
+        if path.exists() and not force:
+            print(f"  {ticker}: foreign flow cache exists, skipping")
+            continue
+        px_path = config.PRICE_CACHE_DIR / f"{ticker}.parquet"
+        if not px_path.exists():
+            raise RuntimeError("Seed prices before foreign flow")
+        close = pd.read_parquet(px_path)["Close"]
+        ret = close.pct_change().fillna(0.0)
+        z = (ret - ret.mean()) / ret.std()
+        k = FLOW_RET_CORR
+        noise = rng.normal(0, 1, len(z))
+        flow = FLOW_STD_BN[ticker] * (k * z.values
+                                      + np.sqrt(1 - k ** 2) * noise)
+        df = pd.DataFrame({"net_foreign_idr_bn": np.round(flow, 1)},
+                          index=close.index)
+        df.index.name = "date"
+        df.to_parquet(path)
+        meta = {"source": config.SOURCE_SAMPLE,
+                "fetched_at": dt.datetime.now().isoformat(timespec="seconds")}
+        (out_dir / f"{ticker}.meta.json").write_text(json.dumps(meta, indent=2))
+        realized = float(np.corrcoef(flow, ret.values)[0, 1])
+        print(f"  {ticker}: seeded {len(df):,} sample flow rows "
+              f"(realized corr vs returns {realized:.2f})")
+
+
 def seed_all(force: bool = False) -> None:
     print("Seeding SAMPLE data cache (illustrative figures — not real "
           "market data):")
     seed_prices(force)
     seed_fundamentals(force)
+    seed_foreign_flow(force)
     print("Sample seed complete. Run `python refresh.py` with internet "
           "access to replace it with live yfinance data.")
 

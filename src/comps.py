@@ -22,7 +22,7 @@ from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from src import config, fetch, valuation
+from src import config, fetch, flows, valuation
 
 NAVY = "1F3864"
 LIGHT = "F2F5F9"
@@ -67,6 +67,7 @@ def _bank_row(ticker: str) -> dict:
     manual = fetch.latest_manual(ticker)
     px = fetch.load_prices(ticker)["Close"].dropna()
     yr = px[px.index >= px.index[-1] - pd.Timedelta(days=365)]
+    flow = flows.bank_flow_summary(ticker)
 
     return {
         "name": config.UNIVERSE[ticker]["short"],
@@ -88,6 +89,9 @@ def _bank_row(ticker: str) -> dict:
         "loan_growth_yoy_pct": manual["loan_growth_yoy_pct"],
         "cost_of_credit_pct": manual["cost_of_credit_pct"],
         "cost_income_pct": manual["cost_income_pct"],
+        "flow_3m_tn": flow["flow_3m_tn"],
+        "flow_12m_tn": flow["flow_12m_tn"],
+        "flow_corr_1y": flow["corr_daily_1y"],
         "manual_period": manual["period"],
         "latest_fy": latest_fy,
         "eps": row_fy["eps"],
@@ -100,6 +104,7 @@ NUMERIC_COLS = [
     "price", "mcap_tn", "pe_trailing", "pe_forward", "pb", "roe_pct",
     "roa_pct", "div_yield_pct", "nim_pct", "casa_pct", "npl_pct", "car_pct",
     "loan_growth_yoy_pct", "cost_of_credit_pct", "cost_income_pct",
+    "flow_3m_tn", "flow_corr_1y",
 ]
 
 
@@ -117,6 +122,11 @@ def build_comps() -> CompsResult:
     for col in ("price",):
         aggregates.loc["Cap-weighted mean", col] = float("nan")
         aggregates.loc["Median", col] = float("nan")
+    # Cap-weighting a correlation coefficient is statistically meaningless,
+    # and a cap-weighted mean of net flows has no economic reading either
+    # (the meaningful sector aggregate — the total — goes in the footnote).
+    aggregates.loc["Cap-weighted mean", "flow_corr_1y"] = float("nan")
+    aggregates.loc["Cap-weighted mean", "flow_3m_tn"] = float("nan")
 
     # Premium / discount to sector median on the two valuation multiples.
     for col, out in (("pb", "pb_prem_disc_pct"),
@@ -152,9 +162,11 @@ FILL_LIGHT = PatternFill("solid", fgColor=LIGHT)
 
 FMT_PRICE = "#,##0"
 FMT_TN = "#,##0.0"
+FMT_TN_SIGNED = "+#,##0.0;-#,##0.0;0.0"
 FMT_X = '0.0"x"'
 FMT_PCT = '0.0"%"'
 FMT_PCT2 = '0.00"%"'
+FMT_CORR = "0.00"
 
 
 def _title_block(ws, title: str, as_of: dt.date, sample: bool,
@@ -193,6 +205,8 @@ SUMMARY_COLS: list[tuple[str, str, str]] = [
     ("loan_growth_yoy_pct", "Loan gr.\nYoY", FMT_PCT),
     ("cost_of_credit_pct", "Cost of\ncredit", FMT_PCT2),
     ("cost_income_pct", "Cost/\nincome", FMT_PCT),
+    ("flow_3m_tn", "Net frgn\n3M (tn)", FMT_TN_SIGNED),
+    ("flow_corr_1y", "Flow/ret\ncorr 1Y", FMT_CORR),
 ]
 
 
@@ -251,11 +265,18 @@ def _write_summary(wb: Workbook, comps: CompsResult) -> None:
                     cell.font = F_BOLD
         r += 1
 
-    # Footnote
+    # Footnotes
+    sector_3m = comps.table["flow_3m_tn"].astype(float).sum()
     ws.cell(row=r + 1, column=1,
             value="* Forward P/E uses the analyst's own FY+1 EPS estimate "
                   "from assumptions/<TICKER>.yaml (no consensus feed) — "
                   "clearly labeled, not consensus.").font = F_SUB
+    ws.cell(row=r + 2, column=1,
+            value=f"Net foreign flow: net foreign buy value, IDR tn "
+                  f"(+ = inflow). Sector 3M total: {sector_3m:+.1f} tn. "
+                  f"Corr = Pearson(daily net flow, daily return), trailing "
+                  f"1Y — contemporaneous co-movement, not a forecast."
+            ).font = F_SUB
 
     # Conditional formatting: premium/discount to median (green=cheap,
     # red=expensive)
@@ -268,6 +289,15 @@ def _write_summary(wb: Workbook, comps: CompsResult) -> None:
                        start_color="63BE7B",
                        mid_type="num", mid_value=0, mid_color="FFFFFF",
                        end_type="num", end_value=40, end_color="F8696B"))
+    # …and on 3M net foreign flow (red=outflow, green=inflow)
+    fl_col = next(j for j, (c, _, _) in enumerate(SUMMARY_COLS, start=2)
+                  if c == "flow_3m_tn")
+    letter = get_column_letter(fl_col)
+    ws.conditional_formatting.add(
+        f"{letter}{r0 + 1}:{letter}{r0 + len(config.TICKERS)}",
+        ColorScaleRule(start_type="num", start_value=-5, start_color="F8696B",
+                       mid_type="num", mid_value=0, mid_color="FFFFFF",
+                       end_type="num", end_value=5, end_color="63BE7B"))
 
     # Layout
     ws.freeze_panes = ws.cell(row=r0 + 1, column=3)  # freeze header + ticker+name
@@ -324,6 +354,25 @@ def _write_bank_tab(wb: Workbook, ticker: str, comps: CompsResult) -> None:
         ("Cost of equity (CAPM)", val.coe_pct, FMT_PCT2),
     ]
     r = _kv_rows(ws, r, pairs)
+    r += 1
+
+    # --- Foreign flow monitor
+    ws.cell(row=r, column=1,
+            value="FOREIGN FLOW MONITOR (net foreign buy value)"
+            ).font = F_SECTION
+    r += 1
+    fs = flows.bank_flow_summary(ticker)
+    h = fs["horizons_tn"]
+    flow_pairs = [
+        (f"Net foreign flow {lbl} (IDR tn)", float(h[lbl]), FMT_TN_SIGNED)
+        for lbl in ("1W", "1M", "3M", "6M", "YTD", "12M")
+    ] + [
+        ("Corr(daily flow, daily return), 1Y", fs["corr_daily_1y"], FMT_CORR),
+        ("Corr(weekly flow, weekly return), 1Y", fs["corr_weekly_1y"],
+         FMT_CORR),
+        ("Flow data through", str(fs["last_date"]), ""),
+    ]
+    r = _kv_rows(ws, r, flow_pairs)
     r += 1
 
     # --- Quarterly manual metrics table
@@ -429,6 +478,9 @@ def _write_notes(wb: Workbook, comps: CompsResult) -> None:
         "  Bank-specific ratios (NIM, CASA, NPL, CAR, loan growth, cost of "
         "credit, cost/income): manual layer transcribed from quarterly "
         "investor presentations (data/manual/<TICKER>.csv) — source of truth.",
+        "  Net foreign flow: "
+        + ", ".join(f"{t}={fetch.flow_source(t)}" for t in config.TICKERS)
+        + " (manual CSV export > IDX daily trading summary > cache).",
         "  Macro: data/manual/macro.csv (BI rate, USD/IDR, Indonesia 10Y).",
         "",
         "METHODOLOGY",

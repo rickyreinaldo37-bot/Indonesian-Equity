@@ -1,5 +1,5 @@
 # PT Bank Rakyat Indonesia (Persero) Tbk (BBRI.JK) — Initiation of Coverage
-*21 July 2026 · Ricky Reinaldo · Indonesian Equity Research*
+*22 July 2026 · Ricky Reinaldo · Indonesian Equity Research*
 
 > **DRAFT BUILT ON SAMPLE DATA — ILLUSTRATIVE ONLY, NOT FOR PUBLICATION**
 
@@ -47,9 +47,21 @@ Residual income model: COE 11.40%, ROE fade 16.0% → 17.0% over 5y, payout 80%,
 | 11.90% | 3,187 | 3,444 | 3,703 | 3,964 | 4,227 |
 | 12.40% | 2,986 | 3,222 | 3,461 | 3,701 | 3,944 |
 
+## Foreign flow monitor
+
+Trailing-1Y corr(daily net foreign flow, daily return): **0.55** (weekly 0.41). Data through 2026-07-20. Contemporaneous co-movement, not a forecast.
+
+| 1W | 1M | 3M | 6M | YTD | 12M |
+|---|---|---|---|---|---|
+| +0.3 | +2.3 | +4.9 | +2.8 | +2.4 | +2.6 |
+
+*Net foreign buy value, IDR tn. [TO WRITE — interpret positioning.]*
+
 ## Key exhibits
 
 ![pb_band_BBRI](../charts/BBRI/pb_band.png)
+![foreign_flow_BBRI](../charts/BBRI/foreign_flow.png)
+![foreign_flow_sector](../charts/sector/foreign_flow_cumulative.png)
 ![price_rebased](../charts/sector/price_rebased.png)
 ![roe_vs_pb](../charts/sector/roe_vs_pb.png)
 ![nim_trend](../charts/sector/nim_trend.png)
