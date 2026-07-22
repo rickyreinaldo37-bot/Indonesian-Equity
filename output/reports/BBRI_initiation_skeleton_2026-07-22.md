@@ -10,6 +10,7 @@
 | **Last close** | IDR 4,380 | **Div yield** | 7.9% |
 | **Upside/(downside)** | -9.1% | **ROE** | 16.0% |
 | **Market cap** | IDR 664 tn | **COE (CAPM)** | 11.40% |
+| **Fwd P/E (own est.)** | 11.4x | **Consensus TP (SAMPLE)** | IDR 5,100 (+16.4%) |
 
 ## Investment thesis
 
@@ -46,6 +47,33 @@ Residual income model: COE 11.40%, ROE fade 16.0% → 17.0% over 5y, payout 80%,
 | 11.40% | 3,419 | 3,699 | 3,982 | 4,267 | 4,555 |
 | 11.90% | 3,187 | 3,444 | 3,703 | 3,964 | 4,227 |
 | 12.40% | 2,986 | 3,222 | 3,461 | 3,701 | 3,944 |
+
+## Earnings forecast & forward valuation
+
+12-month forward EPS of **IDR 383** is the analyst's own FY+1 estimate (no consensus feed): implies net income ~IDR 58.0 tn, +6.5% EPS growth vs FY25, and **forward P/E 11.4x** at the last close. RI-model year-1 EPS cross-check: IDR 355.
+
+| | Trailing FY25 | Forward FY+1E (own) |
+|---|---|---|
+| EPS (IDR) | 360 | 383 |
+| Net income (IDR tn) | 54.5 | 58.0 |
+| P/E | 12.2x | 11.4x |
+| EPS growth YoY | — | 6.5% |
+
+**Sell-side consensus**
+
+> **SAMPLE placeholders — illustrative only, NOT real consensus.**
+
+| Consensus | |
+|---|---|
+| Mean target price (IDR) | 5,100 |
+| Target range (IDR) | 4,200–5,800 |
+| Implied upside | 16.4% |
+| # analysts | 34 |
+| Rating | buy |
+| Consensus fwd P/E | 11.1x |
+| Source | SAMPLE_SEED |
+
+*[TO WRITE — reconcile your estimate and target with consensus.]*
 
 ## Foreign flow monitor
 

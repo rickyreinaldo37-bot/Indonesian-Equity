@@ -268,6 +268,101 @@ def fundamentals_frame(ticker: str) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Analyst consensus (target price, ratings, consensus forward EPS)
+# ---------------------------------------------------------------------------
+# Yahoo Finance aggregates sell-side analyst targets and estimates for these
+# liquid names. We treat it as a convenience source, cached and source-tagged
+# like everything else; an analyst-sourced override in assumptions/<TICKER>.yaml
+# (consensus block) takes priority when set. IMPORTANT: consensus figures are
+# never fabricated — when no live/manual source is available the value is
+# reported as n/a, and any SAMPLE placeholder is loudly tagged.
+
+CONSENSUS_FIELDS = [
+    "target_mean", "target_high", "target_low", "num_analysts",
+    "recommendation_key", "recommendation_mean", "consensus_forward_eps",
+]
+
+
+def _consensus_path(ticker: str) -> Path:
+    return config.CONSENSUS_CACHE_DIR / f"{ticker}.json"
+
+
+def fetch_consensus(ticker: str, force: bool = False) -> dict:
+    """Refresh analyst consensus from yfinance, cached to JSON. Falls back to
+    cache when the network is unavailable; raises if neither exists."""
+    cached = _read_consensus_cache(ticker)
+    if cached is not None and not force and \
+            cached.get("source") == config.SOURCE_YFINANCE and \
+            cached.get("fetched_at", "")[:10] == dt.date.today().isoformat():
+        return cached
+    fresh = _download_consensus(ticker)
+    if fresh is not None:
+        _consensus_path(ticker).write_text(json.dumps(fresh, indent=2))
+        n = fresh.get("num_analysts")
+        print(f"  {ticker}: consensus refreshed from yfinance "
+              f"(target {fresh.get('target_mean')}, "
+              f"{n if n else '?'} analysts)")
+        return fresh
+    if cached is not None:
+        print(f"  {ticker}: network unavailable — serving cached consensus "
+              f"(source={cached.get('source')})")
+        return cached
+    raise RuntimeError(
+        f"No consensus for {ticker}: yfinance unreachable and no local cache. "
+        f"Run scripts/make_sample_seed.py or set the consensus block in "
+        f"assumptions/{ticker}.yaml.")
+
+
+def _download_consensus(ticker: str) -> dict | None:
+    try:
+        import yfinance as yf
+        info = yf.Ticker(config.UNIVERSE[ticker]["yf"]).info or {}
+    except Exception:
+        return None
+    if not info:
+        return None
+    target = info.get("targetMeanPrice")
+    if target is None:
+        return None  # no analyst coverage returned
+
+    def _num(key):
+        v = info.get(key)
+        return float(v) if isinstance(v, (int, float)) else None
+
+    payload = {
+        "ticker": ticker,
+        "source": config.SOURCE_YFINANCE,
+        "fetched_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "target_mean": _num("targetMeanPrice"),
+        "target_high": _num("targetHighPrice"),
+        "target_low": _num("targetLowPrice"),
+        "num_analysts": _num("numberOfAnalystOpinions"),
+        "recommendation_key": info.get("recommendationKey"),
+        "recommendation_mean": _num("recommendationMean"),
+        "consensus_forward_eps": _num("forwardEps"),
+    }
+    return payload
+
+
+def _read_consensus_cache(ticker: str) -> dict | None:
+    path = _consensus_path(ticker)
+    if not path.exists():
+        return None
+    return json.loads(path.read_text())
+
+
+def load_consensus(ticker: str) -> dict | None:
+    """Cache-only consensus reader. Returns None if nothing is cached (a
+    missing consensus is a valid state — reported as n/a downstream)."""
+    return _read_consensus_cache(ticker)
+
+
+def consensus_source(ticker: str) -> str:
+    data = _read_consensus_cache(ticker)
+    return data.get("source", "unknown") if data else "missing"
+
+
+# ---------------------------------------------------------------------------
 # Manual bank metrics (source of truth for bank-specific ratios)
 # ---------------------------------------------------------------------------
 
@@ -577,6 +672,7 @@ class DataStatus:
     manual_sample: bool
     flow_rows: int
     flow_source: str
+    consensus_source: str
 
 
 def data_status() -> list[DataStatus]:
@@ -601,6 +697,7 @@ def data_status() -> list[DataStatus]:
             manual_sample=manual_is_sample(ticker),
             flow_rows=flow_rows,
             flow_source=flow_source(ticker),
+            consensus_source=consensus_source(ticker),
         ))
     return rows
 
@@ -612,6 +709,8 @@ def any_sample_data() -> bool:
         if price_source(ticker) == config.SOURCE_SAMPLE:
             return True
         if flow_source(ticker) == config.SOURCE_SAMPLE:
+            return True
+        if consensus_source(ticker) == config.SOURCE_SAMPLE:
             return True
         try:
             if load_fundamentals(ticker).get("source") == config.SOURCE_SAMPLE:

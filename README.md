@@ -2,8 +2,9 @@
 
 A Python research-production system for sell-side-style coverage of the four
 Indonesian large-cap banks — **BBCA, BBRI, BMRI, BBNI**. It automates data
-collection, comps, valuation, charts, **net foreign flow monitoring**, and
-report scaffolding so the analyst can focus on thesis, writing, and judgment.
+collection, comps, valuation, **forward earnings & consensus**, charts,
+**net foreign flow monitoring**, and report scaffolding so the analyst can
+focus on thesis, writing, and judgment.
 
 The system deliberately does **not** write the investment thesis, pick
 ratings, or generate trading signals — those stay human.
@@ -16,8 +17,9 @@ pip install -r requirements.txt
 python refresh.py                  # 1. fetch/refresh all data (cached locally)
 python comps.py                    # 2. build the sector comps workbook (xlsx)
 python -m src.valuation BBRI       # 3. print a bank's RI + DDM valuation
-python -m src.charts               # 4. render all house-style chart PNGs
-python make_report.py BBRI         # 5. generate an initiation report skeleton
+python -m src.forwards BBRI        # 4. print forward EPS, forward P/E, consensus
+python -m src.charts               # 5. render all house-style chart PNGs
+python make_report.py BBRI         # 6. generate an initiation report skeleton
 ```
 
 `python refresh.py && python comps.py` produces the styled workbook
@@ -60,6 +62,7 @@ data/cache/                     yfinance + flow pulls, source-tagged        ┘
         ├── src/valuation.py  F3  residual income (primary) + DDM cross-check
         ├── src/charts.py     F4  house-style PNG exhibits @300dpi
         ├── src/flows.py          net foreign flow analytics (sums, corr)
+        ├── src/forwards.py       forward EPS / forward P/E / consensus
         └── src/report.py     F5  initiation skeleton (docx / markdown)
 ```
 
@@ -72,9 +75,10 @@ block, and the report skeleton all update consistently. No manual edits.
 
 | Command | Output |
 |---|---|
-| `python comps.py` | `output/comps_YYYY-MM-DD.xlsx` — Summary tab (frozen headers, number formats, conditional formatting vs sector median **and on 3M net foreign flow**), one detail tab per bank (incl. a foreign-flow monitor block), Notes tab |
+| `python comps.py` | `output/comps_YYYY-MM-DD.xlsx` — Summary tab (frozen headers, number formats, conditional formatting vs sector median, on 3M net foreign flow **and on upside-to-consensus-target**; forward P/E + **consensus target/upside columns**), one detail tab per bank (incl. **forward-estimates & consensus block** and a foreign-flow monitor block), Notes tab |
+| `python -m src.forwards <TICKER>` | Prints 12M forward EPS (own est.), forward net income, EPS growth, forward P/E, model cross-check, and consensus target/upside/rating (real source or n/a) |
 | `python -m src.charts` | `output/charts/sector/` (rebased price, ROE vs P/B with OLS fit, NIM trend, loan growth, **cumulative net foreign flow by bank**) and `output/charts/<TICKER>/` (`pb_band.png` ±1σ/±2σ of 5Y history, **`foreign_flow.png` price vs cumulative flow**) |
-| `python make_report.py <TICKER> [--format md]` | `output/reports/<TICKER>_initiation_skeleton_YYYY-MM-DD.docx` — cover block (rating placeholder, RI price target, upside), thesis/overview/risks placeholders, auto-filled valuation section + sensitivity, **foreign flow monitor**, embedded exhibits, financials appendix, disclosures |
+| `python make_report.py <TICKER> [--format md]` | `output/reports/<TICKER>_initiation_skeleton_YYYY-MM-DD.docx` — cover block (rating placeholder, RI price target, **consensus target**, upside), thesis/overview/risks placeholders, auto-filled valuation section + sensitivity, **earnings forecast & forward valuation** (forward P/E + consensus), **foreign flow monitor**, embedded exhibits, financials appendix, disclosures |
 
 ## Valuation methodology
 
@@ -95,6 +99,38 @@ Run the math tests (hand-calculated fixtures, documented in-line):
 ```bash
 python -m pytest tests/ -q
 ```
+
+## Forward earnings & consensus
+
+The engine keeps two forward-looking things strictly separate and clearly
+labeled — it never presents one as the other:
+
+**1. Your own 12-month forward view.** Forward EPS is *your* FY+1 estimate,
+set in `assumptions/<TICKER>.yaml` (`forward_eps`) — there is no consensus
+feed behind it. From it the engine derives forward net income, YoY earnings
+growth, and **forward P/E** (last close ÷ forward EPS), and cross-checks it
+against the residual income model's own year-1 implied EPS
+(ROE-start × opening book). A wide gap flags an estimate to revisit.
+
+**2. Sell-side consensus.** Target price, analyst count, rating, and
+consensus forward EPS come from a **real source only**:
+
+1. An analyst-sourced override in `assumptions/<TICKER>.yaml` (`consensus`
+   block) — paste a figure you sourced and cite it. Highest priority.
+2. The yfinance consensus cache (`targetMeanPrice`, `numberOfAnalystOpinions`,
+   `recommendationKey`, `forwardEps`), refreshed by `refresh.py`.
+3. If neither exists, **every consensus field is reported as `n/a`**.
+
+**Consensus is never fabricated.** Offline, the repo ships clearly-tagged
+`SAMPLE` placeholders (so the report's forward section has structure to
+show); they are labeled "SAMPLE — illustrative, NOT real consensus" and are
+replaced by real aggregated targets on a live yfinance refresh.
+
+This surfaces in the report cover block (house RI target *and* consensus
+target side by side), a dedicated "Earnings forecast & forward valuation"
+section, and the comps workbook (forward P/E, consensus target, upside-to-
+target columns + a per-bank forward block). See `src/forwards.py`
+(`python -m src.forwards <TICKER>`).
 
 ## Net foreign flow
 
@@ -138,8 +174,10 @@ fixtures); the flow cache and CSV/IDX import live in `src/fetch.py`.
 2. Drop your latest net-foreign-flow export into
    `data/manual/foreign_flow/<TICKER>.csv` (optional but recommended for
    real data — otherwise the engine tries the IDX endpoint, then the cache).
-3. `python refresh.py` — pulls prices/fundamentals/flow, revalidates.
-4. Revisit `assumptions/<TICKER>.yaml` if the print changes your view.
+3. `python refresh.py` — pulls prices/fundamentals/flow/consensus, revalidates.
+4. Revisit `assumptions/<TICKER>.yaml` if the print changes your view —
+   including `forward_eps` (your FY+1 estimate) and the optional `consensus`
+   override block.
 5. `python comps.py && python -m src.charts` — refreshed exhibits.
 6. `python make_report.py <TICKER>` for any report you're writing; fill in
    the qualitative sections.
@@ -155,10 +193,10 @@ house colors/markers: `src/config.py`.
 ├── refresh.py            # one-command data refresh
 ├── comps.py              # comps workbook entry point
 ├── make_report.py        # report skeleton entry point
-├── src/                  # engine modules (config, fetch, comps, valuation, charts, flows, report)
+├── src/                  # engine modules (config, fetch, comps, valuation, charts, flows, forwards, report)
 ├── data/manual/          # analyst-maintained inputs (source of truth)
 │   └── foreign_flow/     # optional net-foreign-flow CSV exports per bank
-├── data/cache/           # yfinance + flow cache, source-tagged (sample seed ships here)
+├── data/cache/           # yfinance + flow + consensus cache, source-tagged (sample seed ships here)
 ├── assumptions/          # per-bank valuation assumptions (yaml)
 ├── scripts/make_sample_seed.py   # reinstall the offline sample cache
 ├── tests/                # valuation + schema validation tests

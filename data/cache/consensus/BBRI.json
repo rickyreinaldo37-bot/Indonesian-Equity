@@ -1,0 +1,12 @@
+{
+  "ticker": "BBRI",
+  "source": "SAMPLE_SEED",
+  "fetched_at": "2026-07-22T01:24:40",
+  "target_mean": 5100.0,
+  "target_high": 5800.0,
+  "target_low": 4200.0,
+  "num_analysts": 34.0,
+  "recommendation_key": "buy",
+  "recommendation_mean": 1.7,
+  "consensus_forward_eps": 395.0
+}

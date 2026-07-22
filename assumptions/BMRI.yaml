@@ -25,6 +25,15 @@ residual_income:
 bvps_override: null           # IDR per share; null → latest BVPS from cache
 forward_eps: 600              # analyst FY26E EPS (IDR) — own estimate, not consensus
 
+# Analyst consensus override (optional). Set target_price_idr to consensus you
+# have sourced yourself (cite it in `source`) to override the cached yfinance
+# consensus. Leave null to use the yfinance/consensus cache — or the clearly
+# tagged SAMPLE seed when offline. Consensus figures are never fabricated.
+consensus:
+  target_price_idr: null
+  num_analysts: null
+  source: null
+
 notes: >
   Corporate/wholesale leader with Livin' digital franchise driving CASA.
   Loan growth normalising from the 2024 surge; funding cost relief from BI

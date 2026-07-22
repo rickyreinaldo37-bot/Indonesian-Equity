@@ -32,7 +32,7 @@ def main() -> int:
     _rule("=")
 
     # 1) Prices ------------------------------------------------------------
-    print("\n[1/4] Daily prices (yfinance, cached to parquet)")
+    print("\n[1/5] Daily prices (yfinance, cached to parquet)")
     try:
         fetch.fetch_prices(config.TICKERS, start=args.start, force=args.force)
     except RuntimeError as exc:
@@ -45,8 +45,8 @@ def main() -> int:
         else:
             raise
 
-    # 2) Fundamentals ------------------------------------------------------
-    print("\n[2/4] Fundamentals (yfinance income statement / balance sheet)")
+    # 2) Fundamentals & consensus -----------------------------------------
+    print("\n[2/5] Fundamentals & analyst consensus (yfinance)")
     for ticker in config.TICKERS:
         try:
             fetch.fetch_fundamentals(ticker, force=args.force)
@@ -55,6 +55,14 @@ def main() -> int:
             from scripts.make_sample_seed import seed_fundamentals
             seed_fundamentals()
             fetch.fetch_fundamentals(ticker)
+    for ticker in config.TICKERS:
+        try:
+            fetch.fetch_consensus(ticker, force=args.force)
+        except RuntimeError:
+            print(f"  {ticker}: no consensus cache — installing SAMPLE seed …")
+            from scripts.make_sample_seed import seed_consensus
+            seed_consensus()
+            fetch.fetch_consensus(ticker)
 
     # 3) Net foreign flow --------------------------------------------------
     print("\n[3/5] Net foreign flow (manual CSV > IDX summary > cache)")
@@ -100,13 +108,13 @@ def main() -> int:
     _rule()
     print(f"{'':<6}{'px rows':>8} {'px last':>11} {'px source':>12} "
           f"{'FY yrs':>7} {'fund source':>12} {'qtrs':>5} {'latest':>7} "
-          f"{'flow rows':>10} {'flow source':>12}")
+          f"{'flow rows':>10} {'flow source':>12} {'consensus':>12}")
     _rule()
     for s in fetch.data_status():
         print(f"{s.ticker:<6}{s.price_rows:>8,} {s.price_last:>11} "
               f"{s.price_source:>12} {s.fund_years:>7} {s.fund_source:>12} "
               f"{s.manual_quarters:>5} {s.manual_latest:>7} "
-              f"{s.flow_rows:>10,} {s.flow_source:>12}")
+              f"{s.flow_rows:>10,} {s.flow_source:>12} {s.consensus_source:>12}")
     _rule()
 
     if fetch.any_sample_data():

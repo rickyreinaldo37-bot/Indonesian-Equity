@@ -22,7 +22,7 @@ from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from src import config, fetch, flows, valuation
+from src import config, fetch, flows, forwards, valuation
 
 NAVY = "1F3864"
 LIGHT = "F2F5F9"
@@ -68,6 +68,7 @@ def _bank_row(ticker: str) -> dict:
     px = fetch.load_prices(ticker)["Close"].dropna()
     yr = px[px.index >= px.index[-1] - pd.Timedelta(days=365)]
     flow = flows.bank_flow_summary(ticker)
+    fwd = forwards.forward_view(ticker)
 
     return {
         "name": config.UNIVERSE[ticker]["short"],
@@ -92,6 +93,10 @@ def _bank_row(ticker: str) -> dict:
         "flow_3m_tn": flow["flow_3m_tn"],
         "flow_12m_tn": flow["flow_12m_tn"],
         "flow_corr_1y": flow["corr_daily_1y"],
+        "consensus_tp": fwd.target_mean if fwd.consensus_available
+        else float("nan"),
+        "consensus_upside_pct": fwd.upside_to_target_pct
+        if fwd.consensus_available else float("nan"),
         "manual_period": manual["period"],
         "latest_fy": latest_fy,
         "eps": row_fy["eps"],
@@ -104,7 +109,7 @@ NUMERIC_COLS = [
     "price", "mcap_tn", "pe_trailing", "pe_forward", "pb", "roe_pct",
     "roa_pct", "div_yield_pct", "nim_pct", "casa_pct", "npl_pct", "car_pct",
     "loan_growth_yoy_pct", "cost_of_credit_pct", "cost_income_pct",
-    "flow_3m_tn", "flow_corr_1y",
+    "flow_3m_tn", "flow_corr_1y", "consensus_tp", "consensus_upside_pct",
 ]
 
 
@@ -127,6 +132,10 @@ def build_comps() -> CompsResult:
     # (the meaningful sector aggregate — the total — goes in the footnote).
     aggregates.loc["Cap-weighted mean", "flow_corr_1y"] = float("nan")
     aggregates.loc["Cap-weighted mean", "flow_3m_tn"] = float("nan")
+    # Target price is a per-share level, not comparable across banks — no
+    # median or mean. Upside-to-target % is comparable; keep its median only.
+    aggregates.loc[["Median", "Cap-weighted mean"], "consensus_tp"] = float("nan")
+    aggregates.loc["Cap-weighted mean", "consensus_upside_pct"] = float("nan")
 
     # Premium / discount to sector median on the two valuation multiples.
     for col, out in (("pb", "pb_prem_disc_pct"),
@@ -195,6 +204,8 @@ SUMMARY_COLS: list[tuple[str, str, str]] = [
     ("pe_forward", "P/E\nFY+1E*", FMT_X),
     ("pb", "P/B", FMT_X),
     ("pb_prem_disc_pct", "P/B vs\nmedian", FMT_PCT),
+    ("consensus_tp", "Cons.\nTP†", FMT_PRICE),
+    ("consensus_upside_pct", "Upside\nto TP†", FMT_PCT),
     ("roe_pct", "ROE\n{fy}", FMT_PCT),
     ("roa_pct", "ROA\n{fy}", FMT_PCT2),
     ("div_yield_pct", "Div\nyield", FMT_PCT),
@@ -277,6 +288,14 @@ def _write_summary(wb: Workbook, comps: CompsResult) -> None:
                   f"Corr = Pearson(daily net flow, daily return), trailing "
                   f"1Y — contemporaneous co-movement, not a forecast."
             ).font = F_SUB
+    cons_srcs = ", ".join(sorted({fetch.consensus_source(t)
+                                  for t in config.TICKERS}))
+    ws.cell(row=r + 3, column=1,
+            value=f"† Cons. TP = sell-side consensus mean target price; "
+                  f"Upside to TP = vs last close. Source(s): {cons_srcs}. "
+                  f"Consensus is never fabricated — n/a where no source "
+                  f"exists; SAMPLE where illustrative."
+            ).font = F_SUB
 
     # Conditional formatting: premium/discount to median (green=cheap,
     # red=expensive)
@@ -298,6 +317,15 @@ def _write_summary(wb: Workbook, comps: CompsResult) -> None:
         ColorScaleRule(start_type="num", start_value=-5, start_color="F8696B",
                        mid_type="num", mid_value=0, mid_color="FFFFFF",
                        end_type="num", end_value=5, end_color="63BE7B"))
+    # …and on upside to consensus target (red=downside, green=upside)
+    up_col = next(j for j, (c, _, _) in enumerate(SUMMARY_COLS, start=2)
+                  if c == "consensus_upside_pct")
+    letter = get_column_letter(up_col)
+    ws.conditional_formatting.add(
+        f"{letter}{r0 + 1}:{letter}{r0 + len(config.TICKERS)}",
+        ColorScaleRule(start_type="num", start_value=-20, start_color="F8696B",
+                       mid_type="num", mid_value=0, mid_color="FFFFFF",
+                       end_type="num", end_value=20, end_color="63BE7B"))
 
     # Layout
     ws.freeze_panes = ws.cell(row=r0 + 1, column=3)  # freeze header + ticker+name
@@ -354,6 +382,47 @@ def _write_bank_tab(wb: Workbook, ticker: str, comps: CompsResult) -> None:
         ("Cost of equity (CAPM)", val.coe_pct, FMT_PCT2),
     ]
     r = _kv_rows(ws, r, pairs)
+    r += 1
+
+    # --- Forward estimates & consensus
+    ws.cell(row=r, column=1,
+            value="FORWARD ESTIMATES & CONSENSUS").font = F_SECTION
+    r += 1
+    fwd = forwards.forward_view(ticker)
+    fwd_pairs = [
+        ("Forward EPS FY+1E, own est. (IDR)",
+         round(fwd.fwd_eps_own) if fwd.fwd_eps_own else "n/a",
+         FMT_PRICE if fwd.fwd_eps_own else ""),
+        ("Forward net income, own est. (IDR tn)",
+         fwd.fwd_ni_own_tn if fwd.fwd_ni_own_tn else "n/a",
+         FMT_TN if fwd.fwd_ni_own_tn else ""),
+        ("EPS growth YoY, own est.",
+         fwd.eps_growth_pct if fwd.eps_growth_pct is not None else "n/a",
+         FMT_PCT if fwd.eps_growth_pct is not None else ""),
+        ("Forward P/E, own est.",
+         fwd.fwd_pe_own if fwd.fwd_pe_own else "n/a",
+         FMT_X if fwd.fwd_pe_own else ""),
+        ("RI-model year-1 EPS (cross-check)", round(fwd.model_year1_eps),
+         FMT_PRICE),
+        ("", "", ""),
+    ]
+    if fwd.consensus_available:
+        tag = " [SAMPLE]" if fwd.consensus_is_sample else ""
+        fwd_pairs += [
+            (f"Consensus mean target (IDR){tag}", round(fwd.target_mean),
+             FMT_PRICE),
+            ("Upside to consensus target", fwd.upside_to_target_pct, FMT_PCT),
+            ("Consensus analysts / rating",
+             f"{fwd.num_analysts or 'n/a'} / {fwd.recommendation or 'n/a'}", ""),
+            ("Consensus forward P/E",
+             fwd.fwd_pe_consensus if fwd.fwd_pe_consensus else "n/a",
+             FMT_X if fwd.fwd_pe_consensus else ""),
+            ("Consensus source", str(fwd.consensus_source), ""),
+        ]
+    else:
+        fwd_pairs.append(
+            ("Consensus target", "n/a — no consensus source configured", ""))
+    r = _kv_rows(ws, r, fwd_pairs)
     r += 1
 
     # --- Foreign flow monitor

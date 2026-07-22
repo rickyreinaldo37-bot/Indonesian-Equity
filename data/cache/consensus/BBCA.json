@@ -1,0 +1,12 @@
+{
+  "ticker": "BBCA",
+  "source": "SAMPLE_SEED",
+  "fetched_at": "2026-07-22T01:24:40",
+  "target_mean": 10500.0,
+  "target_high": 11500.0,
+  "target_low": 9000.0,
+  "num_analysts": 35.0,
+  "recommendation_key": "buy",
+  "recommendation_mean": 1.8,
+  "consensus_forward_eps": 505.0
+}

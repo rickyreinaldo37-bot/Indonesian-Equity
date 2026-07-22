@@ -242,12 +242,47 @@ def seed_foreign_flow(force: bool = False) -> None:
               f"(realized corr vs returns {realized:.2f})")
 
 
+# Illustrative analyst consensus — NOT real. (target_mean, target_high,
+# target_low, num_analysts, recommendation_key, recommendation_mean,
+# consensus_forward_eps). These are placeholders so the report's forward
+# section has structure offline; a live yfinance refresh replaces them with
+# real aggregated analyst data (targetMeanPrice etc.).
+CONSENSUS = {
+    "BBCA": (10500, 11500, 9000, 35, "buy", 1.8, 505),
+    "BBRI": (5100, 5800, 4200, 34, "buy", 1.7, 395),
+    "BMRI": (6300, 7200, 5200, 33, "buy", 1.6, 615),
+    "BBNI": (5000, 5800, 4200, 32, "hold", 2.4, 615),
+}
+
+
+def seed_consensus(force: bool = False) -> None:
+    for ticker in config.TICKERS:
+        path = config.CONSENSUS_CACHE_DIR / f"{ticker}.json"
+        if path.exists() and not force:
+            print(f"  {ticker}: consensus cache exists, skipping")
+            continue
+        tm, th, tl, n, key, rmean, feps = CONSENSUS[ticker]
+        payload = {
+            "ticker": ticker,
+            "source": config.SOURCE_SAMPLE,
+            "fetched_at": dt.datetime.now().isoformat(timespec="seconds"),
+            "target_mean": float(tm), "target_high": float(th),
+            "target_low": float(tl), "num_analysts": float(n),
+            "recommendation_key": key, "recommendation_mean": float(rmean),
+            "consensus_forward_eps": float(feps),
+        }
+        path.write_text(json.dumps(payload, indent=2))
+        print(f"  {ticker}: seeded SAMPLE consensus (target {tm}, {n} "
+              f"analysts) — illustrative, not real")
+
+
 def seed_all(force: bool = False) -> None:
     print("Seeding SAMPLE data cache (illustrative figures — not real "
           "market data):")
     seed_prices(force)
     seed_fundamentals(force)
     seed_foreign_flow(force)
+    seed_consensus(force)
     print("Sample seed complete. Run `python refresh.py` with internet "
           "access to replace it with live yfinance data.")
 

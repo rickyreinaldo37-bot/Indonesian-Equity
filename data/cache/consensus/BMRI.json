@@ -1,0 +1,12 @@
+{
+  "ticker": "BMRI",
+  "source": "SAMPLE_SEED",
+  "fetched_at": "2026-07-22T01:24:40",
+  "target_mean": 6300.0,
+  "target_high": 7200.0,
+  "target_low": 5200.0,
+  "num_analysts": 33.0,
+  "recommendation_key": "buy",
+  "recommendation_mean": 1.6,
+  "consensus_forward_eps": 615.0
+}

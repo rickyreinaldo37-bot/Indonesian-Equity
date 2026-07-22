@@ -25,7 +25,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
-from src import charts, config, fetch, flows, valuation
+from src import charts, config, fetch, flows, forwards, valuation
 from src.comps import build_comps
 
 NAVY = RGBColor(0x1F, 0x38, 0x64)
@@ -196,6 +196,7 @@ def _gather(ticker: str) -> dict:
             "row": comps.table.loc[ticker],
             "manual": fetch.load_manual_metrics(ticker),
             "fund": fetch.fundamentals_frame(ticker),
+            "fwd": forwards.forward_view(ticker),
             "sample": comps.sample}
 
 
@@ -247,6 +248,23 @@ def _cover(doc, ticker: str, ctx: dict) -> None:
             run = val_cell.paragraphs[0].add_run(str(value))
             run.font.size = Pt(9)
             run.font.bold = True
+
+    # Consensus target line (distinct from the house RI price target above)
+    fwd = ctx["fwd"]
+    if fwd.consensus_available:
+        tag = " (SAMPLE — illustrative)" if fwd.consensus_is_sample else ""
+        n = f"{fwd.num_analysts} analysts" if fwd.num_analysts else "n/a analysts"
+        rec = f", rating {fwd.recommendation}" if fwd.recommendation else ""
+        _para(doc,
+              f"Consensus target{tag}: IDR {f_idr(fwd.target_mean)}  "
+              f"({fwd.upside_to_target_pct:+.1f}% vs last close)  |  {n}{rec}"
+              f"  |  source: {fwd.consensus_source}",
+              size=9, bold=True,
+              color=RED if fwd.consensus_is_sample else NAVY, space_after=2)
+    else:
+        _para(doc, "Consensus target: n/a — no consensus feed configured "
+                   "(set the consensus block in assumptions.yaml or refresh "
+                   "yfinance)", size=9, color=GRAY, space_after=2)
     _para(doc)
     _para(doc, f"Analyst: {config.ANALYST_NAME}  |  {config.SITE_NAME}",
           size=9, color=GRAY)
@@ -307,6 +325,84 @@ def _valuation_section(doc, ctx: dict) -> None:
     center = (sens.shape[0] // 2, sens.shape[1] // 2)
     _df_table(doc, fmt, index_header="COE \\ terminal ROE", highlight=center)
     _para(doc, "Shaded cell = base case.", size=8.5, color=GRAY)
+
+
+def _forward_section(doc, ctx: dict) -> None:
+    fwd = ctx["fwd"]
+    doc.add_heading("Earnings forecast & forward valuation", level=1)
+
+    # --- Own 12-month forward view
+    doc.add_heading("12-month forward earnings (analyst estimate)", level=2)
+    if fwd.fwd_eps_own is None:
+        _para(doc, "No forward EPS estimate set — populate `forward_eps` in "
+                   f"assumptions/{fwd.ticker}.yaml.", color=RED)
+    else:
+        _para(doc,
+              f"Forward EPS of IDR {f_idr(fwd.fwd_eps_own)} is the analyst's "
+              f"own FY+1 estimate (assumptions/{fwd.ticker}.yaml) — there is "
+              f"no consensus feed behind it. That implies net income of about "
+              f"IDR {fwd.fwd_ni_own_tn:,.1f} tn, {fwd.eps_growth_pct:+.1f}% "
+              f"EPS growth vs {fwd.trailing_fy_label}, and a forward P/E of "
+              f"{fwd.fwd_pe_own:.1f}x at the last close. For consistency, the "
+              f"residual income model's own year-1 EPS (ROE-start × opening "
+              f"book) is IDR {f_idr(fwd.model_year1_eps)}; a wide gap between "
+              f"the two is a flag to revisit the estimate.")
+        own = pd.DataFrame({
+            "Trailing " + fwd.trailing_fy_label: [
+                f_idr(fwd.trailing_eps), f"{fwd.trailing_ni_tn:,.1f}",
+                f_x(fwd.trailing_pe), "—"],
+            "Forward FY+1E (own)": [
+                f_idr(fwd.fwd_eps_own), f"{fwd.fwd_ni_own_tn:,.1f}",
+                f_x(fwd.fwd_pe_own), f_pct(fwd.eps_growth_pct)],
+        }, index=["EPS (IDR)", "Net income (IDR tn)", "P/E", "EPS growth YoY"])
+        _df_table(doc, own, index_header="")
+        _para(doc, "Forward multiples use the analyst's own estimate, not "
+                   "consensus.", size=8.5, color=GRAY)
+
+    # --- Consensus
+    doc.add_heading("Sell-side consensus", level=2)
+    if not fwd.consensus_available:
+        _para(doc, "No consensus source configured. Consensus is never "
+                   "fabricated — set the `consensus` block in "
+                   f"assumptions/{fwd.ticker}.yaml with a figure you have "
+                   "sourced, or run a live yfinance refresh.", color=GRAY)
+    else:
+        if fwd.consensus_is_sample:
+            _para(doc, "The figures below are SAMPLE placeholders — "
+                       "illustrative only, NOT real analyst consensus. A live "
+                       "yfinance refresh replaces them with real aggregated "
+                       "targets.", bold=True, color=RED)
+        rows = [
+            ("Mean target price (IDR)", f_idr(fwd.target_mean)),
+            ("Target range (IDR)",
+             "n/a" if fwd.target_low is None
+             else f"{f_idr(fwd.target_low)} – {f_idr(fwd.target_high)}"),
+            ("Implied upside to target", f_pct(fwd.upside_to_target_pct)),
+            ("Number of analysts",
+             str(fwd.num_analysts) if fwd.num_analysts else "n/a"),
+            ("Consensus rating", fwd.recommendation or "n/a"),
+            ("Consensus forward EPS (IDR)",
+             "n/a" if fwd.consensus_fwd_eps is None
+             else f_idr(fwd.consensus_fwd_eps)),
+            ("Consensus forward P/E",
+             "n/a" if fwd.fwd_pe_consensus is None
+             else f_x(fwd.fwd_pe_consensus)),
+            ("Source", str(fwd.consensus_source)),
+        ]
+        ctbl = pd.DataFrame({"": [v for _, v in rows]},
+                            index=[k for k, _ in rows])
+        _df_table(doc, ctbl, index_header="Consensus")
+        if fwd.fwd_eps_own and fwd.consensus_fwd_eps:
+            delta = 100 * (fwd.fwd_eps_own / fwd.consensus_fwd_eps - 1)
+            _para(doc,
+                  f"The analyst's own forward EPS sits {delta:+.1f}% vs the "
+                  f"consensus forward EPS; the house RI price target of IDR "
+                  f"{f_idr(round_to_tick(ctx['val'].ri_fair_value))} compares "
+                  f"with the consensus mean target of IDR "
+                  f"{f_idr(fwd.target_mean)}.", size=8.5, color=GRAY)
+    _para(doc, "[TO WRITE — reconcile your estimate and target with "
+               "consensus: where you sit above/below the Street and why.]",
+          color=RED)
 
 
 def _flow_section(doc, ticker: str, ctx: dict) -> None:
@@ -411,6 +507,7 @@ def build_docx(ticker: str) -> str:
                "management, ownership.]", color=RED)
 
     _valuation_section(doc, ctx)
+    _forward_section(doc, ctx)
     _flow_section(doc, ticker, ctx)
     _exhibits_section(doc, ticker, ctx)
     _financials_section(doc, ticker, ctx)
@@ -427,8 +524,11 @@ def build_docx(ticker: str) -> str:
                "statements); company quarterly investor presentations "
                "(bank-specific ratios, transcribed by the analyst); "
                "IDX daily trading summary / broker exports (net foreign "
-               "flow); Bank Indonesia / market data (macro). Forward EPS "
-               "estimates are the analyst's own — no consensus feed is used.",
+               "flow); Yahoo Finance / analyst-sourced override (sell-side "
+               "consensus target & rating); Bank Indonesia / market data "
+               "(macro). The house price target and forward P/E use the "
+               "analyst's own FY+1 EPS estimate — labeled 'own est.' and "
+               "kept distinct from sell-side consensus throughout.",
           size=8.5, color=GRAY)
     if ctx["sample"]:
         _para(doc, "THIS DRAFT WAS BUILT ON SAMPLE PLACEHOLDER DATA — "
@@ -473,6 +573,14 @@ def build_markdown(ticker: str) -> str:
         f"{f_pct(row['roe_pct'])} |")
     add(f"| **Market cap** | IDR {row['mcap_tn']:.0f} tn | **COE (CAPM)** | "
         f"{f_pct(val.coe_pct, 2)} |")
+    fwd = ctx["fwd"]
+    fpe = "n/a" if fwd.fwd_pe_own is None else f_x(fwd.fwd_pe_own)
+    if fwd.consensus_available:
+        ctag = " (SAMPLE)" if fwd.consensus_is_sample else ""
+        add(f"| **Fwd P/E (own est.)** | {fpe} | **Consensus TP{ctag}** | "
+            f"IDR {f_idr(fwd.target_mean)} ({fwd.upside_to_target_pct:+.1f}%) |")
+    else:
+        add(f"| **Fwd P/E (own est.)** | {fpe} | **Consensus TP** | n/a |")
 
     add("\n## Investment thesis\n")
     add("*[TO WRITE — the system deliberately does not write this.]*\n")
@@ -503,6 +611,52 @@ def build_markdown(ticker: str) -> str:
     for idx, r in sens.iterrows():
         add(f"| {idx} | " + " | ".join(
             f_idr(v) if pd.notna(v) else "n.m." for v in r) + " |")
+
+    # --- Earnings forecast & forward valuation
+    add("\n## Earnings forecast & forward valuation\n")
+    if fwd.fwd_eps_own is not None:
+        add(f"12-month forward EPS of **IDR {f_idr(fwd.fwd_eps_own)}** is the "
+            f"analyst's own FY+1 estimate (no consensus feed): implies net "
+            f"income ~IDR {fwd.fwd_ni_own_tn:,.1f} tn, "
+            f"{fwd.eps_growth_pct:+.1f}% EPS growth vs {fwd.trailing_fy_label}, "
+            f"and **forward P/E {fwd.fwd_pe_own:.1f}x** at the last close. "
+            f"RI-model year-1 EPS cross-check: IDR "
+            f"{f_idr(fwd.model_year1_eps)}.\n")
+        add(f"| | Trailing {fwd.trailing_fy_label} | Forward FY+1E (own) |")
+        add("|---|---|---|")
+        add(f"| EPS (IDR) | {f_idr(fwd.trailing_eps)} | "
+            f"{f_idr(fwd.fwd_eps_own)} |")
+        add(f"| Net income (IDR tn) | {fwd.trailing_ni_tn:,.1f} | "
+            f"{fwd.fwd_ni_own_tn:,.1f} |")
+        add(f"| P/E | {f_x(fwd.trailing_pe)} | {f_x(fwd.fwd_pe_own)} |")
+        add(f"| EPS growth YoY | — | {f_pct(fwd.eps_growth_pct)} |")
+    else:
+        add(f"*No forward EPS set — populate `forward_eps` in "
+            f"assumptions/{ticker}.yaml.*")
+
+    add("\n**Sell-side consensus**\n")
+    if not fwd.consensus_available:
+        add("*n/a — no consensus source configured. Consensus is never "
+            "fabricated; set the `consensus` block in "
+            f"assumptions/{ticker}.yaml or run a live yfinance refresh.*")
+    else:
+        if fwd.consensus_is_sample:
+            add("> **SAMPLE placeholders — illustrative only, NOT real "
+                "consensus.**\n")
+        rng = ("n/a" if fwd.target_low is None
+               else f"{f_idr(fwd.target_low)}–{f_idr(fwd.target_high)}")
+        cfpe = ("n/a" if fwd.fwd_pe_consensus is None
+                else f_x(fwd.fwd_pe_consensus))
+        add("| Consensus | |")
+        add("|---|---|")
+        add(f"| Mean target price (IDR) | {f_idr(fwd.target_mean)} |")
+        add(f"| Target range (IDR) | {rng} |")
+        add(f"| Implied upside | {f_pct(fwd.upside_to_target_pct)} |")
+        add(f"| # analysts | {fwd.num_analysts or 'n/a'} |")
+        add(f"| Rating | {fwd.recommendation or 'n/a'} |")
+        add(f"| Consensus fwd P/E | {cfpe} |")
+        add(f"| Source | {fwd.consensus_source} |")
+    add("\n*[TO WRITE — reconcile your estimate and target with consensus.]*")
 
     fs = flows.bank_flow_summary(ticker)
     h = fs["horizons_tn"]
