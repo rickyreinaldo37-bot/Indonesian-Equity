@@ -33,28 +33,81 @@ not real market data*. Every file in `data/cache/` carries a `source` tag
 (`SAMPLE_SEED` vs `yfinance`), and every output — Excel, charts, reports —
 displays a red **SAMPLE DATA** banner until all inputs are live.
 
-To go live:
+To go live, get real prices and fundamentals in by **either** route (the two
+can be mixed per-ticker; both flip the source tag off `SAMPLE_SEED`):
 
-1. Run `python refresh.py --force` on a machine with internet access —
-   prices and fundamentals are re-pulled from Yahoo Finance and the source
-   tags flip to `yfinance` automatically.
-2. Transcribe real quarterly metrics (NIM, CASA, NPL, CAR, loan growth,
+- **A. Live yfinance pull** — run `python refresh.py --force` on a machine
+  with internet access to Yahoo Finance; prices and fundamentals re-pull
+  automatically and tag as `yfinance`. (Yahoo/Stockbit/TradingView are all
+  blocked on Claude Code's default web-sandbox network policy — run locally,
+  or use route B.)
+- **B. Offline CSV import** — drop exports into `data/manual/prices/` and
+  `data/manual/fundamentals/` (see [Bringing in real data
+  offline](#bringing-in-real-data-offline)). Works anywhere, no network. The
+  importer accepts Yahoo / Stockbit / TradingView export shapes and tags the
+  data `manual_csv` (source of truth — it wins over yfinance).
+
+Then, regardless of route:
+
+1. Transcribe real quarterly metrics (NIM, CASA, NPL, CAR, loan growth,
    cost of credit, cost/income) from each bank's investor presentation into
    `data/manual/<TICKER>.csv`, replacing the `SAMPLE — …` source labels
    with your citation (e.g. `BBRI 1Q26 analyst deck p.12`).
+2. Optionally drop net-foreign-flow exports into `data/manual/foreign_flow/`
+   and set the `consensus` block in `assumptions/<TICKER>.yaml`.
 3. Review every number in `assumptions/<TICKER>.yaml` — betas, ERP,
    ROE fade paths, payout, terminal growth, and your own forward EPS
    estimates.
 
 The banners disappear only when nothing sample-tagged remains.
 
+## Bringing in real data offline
+
+When live yfinance isn't reachable (e.g. Claude Code's web sandbox blocks
+market-data hosts), feed real data through the manual import layer. Both
+importers validate loudly, dedupe, sort, and tag the cache `manual_csv`
+(source of truth — it overrides yfinance), so `python refresh.py` picks them
+up and the SAMPLE banners clear.
+
+**Daily prices → `data/manual/prices/<TICKER>.csv`.** Accepts the shapes you
+get from a **Yahoo Finance** "Download" (`Date,Open,High,Low,Close,Adj
+Close,Volume`), a **TradingView** "Export chart data" (`time,open,high,low,
+close,Volume`), or a **Stockbit** export. Column names are matched
+case-insensitively; only a date column and a close column are required
+(missing OHLC backfills from close, missing volume → 0). See
+`data/manual/prices/_TEMPLATE.csv`.
+
+**Annual fundamentals → `data/manual/fundamentals/<TICKER>.csv`.** One row
+per fiscal year, values in **IDR billions** and **billions of shares** so the
+figures stay human-sized (transcribe them straight from the annual report):
+
+```
+fiscal_year,net_income_idr_bn,total_equity_idr_bn,total_assets_idr_bn,shares_bn,dps_idr,source
+2025,57500,281000,1540000,123.275,315,BCA FY25 annual report
+```
+
+EPS and BVPS are derived (net income ÷ shares, equity ÷ shares). See
+`data/manual/fundamentals/_TEMPLATE.csv`.
+
+A file named `<TICKER>.csv` (BBCA/BBRI/BMRI/BBNI) is picked up automatically;
+`_TEMPLATE.csv` is ignored. Remove a file to fall back to yfinance/sample.
+Full source priority per input: **manual CSV → yfinance → cache/sample.**
+
+> Note on Stockbit / TradingView: neither is an open public API (both need a
+> logged-in account and restrict scraping), so they are supported as
+> **exports you drop in**, not as live scrapes. Yahoo Finance is the only
+> source the engine pulls automatically (via `yfinance`), when the network
+> allows it.
+
 ## How it fits together
 
 ```
-data/manual/*.csv               analyst-transcribed quarterly bank metrics ─┐
-data/manual/foreign_flow/*.csv  net foreign flow export (optional)          │ source
-data/manual/macro.csv           BI rate, USD/IDR, Indonesia 10Y             │ of
-assumptions/*.yaml              valuation inputs, one file per bank         │ truth
+data/manual/prices/*.csv        daily price export (optional, real-data)   ─┐
+data/manual/fundamentals/*.csv  annual financials export (optional)         │
+data/manual/*.csv               analyst-transcribed quarterly bank metrics  │ source
+data/manual/foreign_flow/*.csv  net foreign flow export (optional)          │ of
+data/manual/macro.csv           BI rate, USD/IDR, Indonesia 10Y             │ truth
+assumptions/*.yaml              valuation inputs, one file per bank          │
 data/cache/                     yfinance + flow pulls, source-tagged        ┘
         │
         ├── src/fetch.py      F1  loaders + schema validation (fails loudly)
@@ -195,6 +248,8 @@ house colors/markers: `src/config.py`.
 ├── make_report.py        # report skeleton entry point
 ├── src/                  # engine modules (config, fetch, comps, valuation, charts, flows, forwards, report)
 ├── data/manual/          # analyst-maintained inputs (source of truth)
+│   ├── prices/           # optional daily-price CSV exports per bank
+│   ├── fundamentals/     # optional annual-financials CSV exports per bank
 │   └── foreign_flow/     # optional net-foreign-flow CSV exports per bank
 ├── data/cache/           # yfinance + flow + consensus cache, source-tagged (sample seed ships here)
 ├── assumptions/          # per-bank valuation assumptions (yaml)

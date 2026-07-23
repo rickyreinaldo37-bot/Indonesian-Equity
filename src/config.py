@@ -75,14 +75,16 @@ FLOW_CACHE_DIR = CACHE_DIR / "foreign_flow"
 CONSENSUS_CACHE_DIR = CACHE_DIR / "consensus"
 MANUAL_DIR = DATA_DIR / "manual"
 MANUAL_FLOW_DIR = MANUAL_DIR / "foreign_flow"
+MANUAL_PRICE_DIR = MANUAL_DIR / "prices"
+MANUAL_FUND_DIR = MANUAL_DIR / "fundamentals"
 ASSUMPTIONS_DIR = ROOT / "assumptions"
 OUTPUT_DIR = ROOT / "output"
 CHART_DIR = OUTPUT_DIR / "charts"
 REPORT_DIR = OUTPUT_DIR / "reports"
 
 for _d in (PRICE_CACHE_DIR, FUND_CACHE_DIR, FLOW_CACHE_DIR,
-           CONSENSUS_CACHE_DIR, MANUAL_DIR, MANUAL_FLOW_DIR, ASSUMPTIONS_DIR,
-           CHART_DIR, REPORT_DIR):
+           CONSENSUS_CACHE_DIR, MANUAL_DIR, MANUAL_FLOW_DIR, MANUAL_PRICE_DIR,
+           MANUAL_FUND_DIR, ASSUMPTIONS_DIR, CHART_DIR, REPORT_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
 # Data-source tags stored in cache metadata. SAMPLE_SEED marks illustrative

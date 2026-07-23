@@ -1,5 +1,5 @@
 # PT Bank Rakyat Indonesia (Persero) Tbk (BBRI.JK) — Initiation of Coverage
-*22 July 2026 · Ricky Reinaldo · Indonesian Equity Research*
+*23 July 2026 · Ricky Reinaldo · Indonesian Equity Research*
 
 > **DRAFT BUILT ON SAMPLE DATA — ILLUSTRATIVE ONLY, NOT FOR PUBLICATION**
 

@@ -41,14 +41,22 @@ def _meta_path(ticker: str) -> Path:
 def fetch_prices(tickers: list[str] | None = None,
                  start: str = config.PRICE_START,
                  force: bool = False) -> dict[str, pd.DataFrame]:
-    """Fetch daily OHLCV for each ticker via yfinance, caching to parquet.
-
-    Falls back to the existing cache when the network is unreachable.
-    Returns {ticker: DataFrame indexed by date}.
+    """Refresh daily OHLCV per ticker, caching to parquet. Source priority:
+    analyst CSV export in data/manual/prices/<TICKER>.csv (source of truth) >
+    yfinance download > existing cache. Returns {ticker: DataFrame by date}.
     """
     tickers = tickers or config.TICKERS
     out: dict[str, pd.DataFrame] = {}
     for ticker in tickers:
+        manual = _load_manual_prices_csv(ticker)
+        if manual is not None:
+            manual.to_parquet(_price_path(ticker))
+            _write_meta(ticker, config.SOURCE_MANUAL_CSV, start)
+            out[ticker] = manual
+            print(f"  {ticker}: imported {len(manual):,} price rows from "
+                  f"manual CSV ({manual.index[0].date()} → "
+                  f"{manual.index[-1].date()})")
+            continue
         yf_symbol = config.UNIVERSE[ticker]["yf"]
         cached = _read_price_cache(ticker)
         if cached is not None and not force and _is_fresh(ticker):
@@ -67,10 +75,84 @@ def fetch_prices(tickers: list[str] | None = None,
             out[ticker] = cached
         else:
             raise RuntimeError(
-                f"No price data for {ticker}: yfinance unreachable and no "
-                f"local cache. Run scripts/make_sample_seed.py to install "
-                f"sample data, or retry with network access.")
+                f"No price data for {ticker}: no manual CSV, yfinance "
+                f"unreachable, and no local cache. Drop an export into "
+                f"data/manual/prices/{ticker}.csv or run "
+                f"scripts/make_sample_seed.py.")
     return out
+
+
+# Flexible column aliases so exports from Yahoo, Stockbit, and TradingView
+# all import without hand-editing.
+_PRICE_DATE_ALIASES = ["date", "time", "datetime", "timestamp"]
+_PRICE_COL_ALIASES = {
+    "Open": ["open"], "High": ["high"], "Low": ["low"],
+    "Close": ["close", "close*", "last", "price"],
+    "AdjClose": ["adjclose", "adj close", "adj_close", "adjusted close",
+                 "adjusted_close"],
+    "Volume": ["volume", "vol"],
+}
+
+
+def _load_manual_prices_csv(ticker: str) -> pd.DataFrame | None:
+    """Validate + normalize an analyst-provided price CSV, if present.
+
+    Accepts common export shapes (Yahoo 'Date,Open,High,Low,Close,Adj Close,
+    Volume'; TradingView 'time,open,high,low,close,Volume'; Stockbit-style).
+    Only a date column and a close column are strictly required; missing OHLC
+    backfill from close, missing volume becomes 0. Returns a DataFrame indexed
+    by date with columns Open/High/Low/Close/AdjClose/Volume, or None if the
+    file is absent. Raises ManualDataError on a malformed file (fail loudly).
+    """
+    path = config.MANUAL_PRICE_DIR / f"{ticker}.csv"
+    if not path.exists():
+        return None
+    raw = pd.read_csv(path)
+    lower = {str(c).strip().lower(): c for c in raw.columns}
+
+    date_col = next((lower[a] for a in _PRICE_DATE_ALIASES if a in lower), None)
+    if date_col is None:
+        raise ManualDataError(
+            f"{path}: no date column found (expected one of "
+            f"{_PRICE_DATE_ALIASES}); columns present: {list(raw.columns)}")
+    resolved: dict[str, str] = {}
+    for canonical, aliases in _PRICE_COL_ALIASES.items():
+        hit = next((lower[a] for a in aliases if a in lower), None)
+        if hit is not None:
+            resolved[canonical] = hit
+    if "Close" not in resolved:
+        raise ManualDataError(
+            f"{path}: no close price column found (expected one of "
+            f"{_PRICE_COL_ALIASES['Close']}); columns: {list(raw.columns)}")
+
+    df = pd.DataFrame(index=pd.to_datetime(raw[date_col], errors="coerce"))
+    if df.index.isna().any():
+        bad = raw[date_col][df.index.isna()].head(3).tolist()
+        raise ManualDataError(
+            f"{path}: unparseable date value(s) e.g. {bad}")
+    for canonical, src_col in resolved.items():
+        df[canonical] = pd.to_numeric(raw[src_col], errors="coerce").values
+
+    df = df[df["Close"].notna()]           # drop Yahoo 'null' rows
+    if df.empty:
+        raise ManualDataError(f"{path}: no rows with a numeric close price")
+    if (df["Close"] <= 0).any():
+        raise ManualDataError(
+            f"{path}: non-positive close price(s) — check the export")
+    for oc in ("Open", "High", "Low", "AdjClose"):
+        if oc not in df.columns:
+            df[oc] = df["Close"]
+        else:
+            df[oc] = df[oc].fillna(df["Close"])
+    if "Volume" not in df.columns:
+        df["Volume"] = 0.0
+    else:
+        df["Volume"] = df["Volume"].fillna(0.0)
+
+    df = df[["Open", "High", "Low", "Close", "AdjClose", "Volume"]]
+    df.index.name = "date"
+    df = df[~df.index.duplicated(keep="last")].sort_index()
+    return df
 
 
 def _download_prices(yf_symbol: str, start: str) -> pd.DataFrame | None:
@@ -151,16 +233,22 @@ def _fund_path(ticker: str) -> Path:
 
 
 def fetch_fundamentals(ticker: str, force: bool = False) -> dict:
-    """Fetch income statement / balance sheet basics from yfinance and
-    normalize into a compact schema:
+    """Refresh annual fundamentals into a compact normalized schema:
 
         {ticker, source, fetched_at, shares_outstanding,
          annual: {"2024": {net_income, total_equity, total_assets,
-                            eps, bvps, dps}, ...}}
+                            shares, eps, bvps, dps}, ...}}
 
-    Values are IDR (statements) and IDR per share (eps/bvps/dps).
-    Falls back to the cached file when the network is unreachable.
+    Values are IDR (statements) and IDR per share (eps/bvps/dps). Source
+    priority: analyst CSV in data/manual/fundamentals/<TICKER>.csv (source of
+    truth) > yfinance > existing cache.
     """
+    manual = _load_manual_fundamentals_csv(ticker)
+    if manual is not None:
+        _fund_path(ticker).write_text(json.dumps(manual, indent=2))
+        print(f"  {ticker}: imported fundamentals from manual CSV "
+              f"({len(manual['annual'])} fiscal years)")
+        return manual
     cached = _read_fund_cache(ticker)
     if cached is not None and not force and \
             cached.get("source") == config.SOURCE_YFINANCE and \
@@ -177,8 +265,71 @@ def fetch_fundamentals(ticker: str, force: bool = False) -> dict:
               f"fundamentals (source={cached.get('source')})")
         return cached
     raise RuntimeError(
-        f"No fundamentals for {ticker}: yfinance unreachable and no local "
-        f"cache. Run scripts/make_sample_seed.py or retry with network.")
+        f"No fundamentals for {ticker}: no manual CSV, yfinance unreachable, "
+        f"and no local cache. Drop an export into "
+        f"data/manual/fundamentals/{ticker}.csv or run "
+        f"scripts/make_sample_seed.py.")
+
+
+# Manual fundamentals CSV: one row per fiscal year. Values in IDR *billions*
+# (natural for reading financial statements) and billions of shares, so the
+# numbers stay human-sized; converted to absolute IDR on import.
+FUND_CSV_COLUMNS = [
+    "fiscal_year", "net_income_idr_bn", "total_equity_idr_bn",
+    "total_assets_idr_bn", "shares_bn", "dps_idr", "source",
+]
+
+
+def _load_manual_fundamentals_csv(ticker: str) -> dict | None:
+    """Validate + normalize an analyst-provided fundamentals CSV, if present.
+    Returns the normalized schema dict or None; raises ManualDataError on a
+    malformed file."""
+    path = config.MANUAL_FUND_DIR / f"{ticker}.csv"
+    if not path.exists():
+        return None
+    df = pd.read_csv(path)
+    missing = [c for c in FUND_CSV_COLUMNS if c not in df.columns]
+    if missing:
+        raise ManualDataError(
+            f"{path}: missing required column(s): {', '.join(missing)}\n"
+            f"Required schema: {', '.join(FUND_CSV_COLUMNS)}")
+    if df.empty:
+        raise ManualDataError(f"{path}: no data rows")
+    numeric = ["net_income_idr_bn", "total_equity_idr_bn",
+               "total_assets_idr_bn", "shares_bn", "dps_idr"]
+    for col in numeric:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+        if df[col].isna().any():
+            bad = df.loc[df[col].isna(), "fiscal_year"].tolist()
+            raise ManualDataError(
+                f"{path}: non-numeric '{col}' in fiscal year(s) {bad}")
+    try:
+        df["fiscal_year"] = df["fiscal_year"].astype(int)
+    except (ValueError, TypeError) as exc:
+        raise ManualDataError(f"{path}: non-integer fiscal_year — {exc}")
+    if (df["shares_bn"] <= 0).any() or (df["total_equity_idr_bn"] <= 0).any():
+        raise ManualDataError(
+            f"{path}: shares_bn and total_equity_idr_bn must be positive")
+
+    df = df.sort_values("fiscal_year")
+    annual: dict[str, dict] = {}
+    for _, r in df.iterrows():
+        ni = float(r["net_income_idr_bn"]) * 1e9
+        eq = float(r["total_equity_idr_bn"]) * 1e9
+        ta = float(r["total_assets_idr_bn"]) * 1e9
+        sh = float(r["shares_bn"]) * 1e9
+        annual[str(int(r["fiscal_year"]))] = {
+            "net_income": ni, "total_equity": eq, "total_assets": ta,
+            "shares": sh, "eps": ni / sh, "bvps": eq / sh,
+            "dps": float(r["dps_idr"]),
+        }
+    return {
+        "ticker": ticker,
+        "source": config.SOURCE_MANUAL_CSV,
+        "fetched_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "shares_outstanding": float(df["shares_bn"].iloc[-1]) * 1e9,
+        "annual": annual,
+    }
 
 
 def _download_fundamentals(ticker: str) -> dict | None:

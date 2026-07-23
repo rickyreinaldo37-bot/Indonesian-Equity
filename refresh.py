@@ -32,9 +32,12 @@ def main() -> int:
     _rule("=")
 
     # 1) Prices ------------------------------------------------------------
-    print("\n[1/5] Daily prices (yfinance, cached to parquet)")
+    print("\n[1/5] Daily prices (manual CSV > yfinance > cache)")
     try:
         fetch.fetch_prices(config.TICKERS, start=args.start, force=args.force)
+    except fetch.ManualDataError as exc:
+        print(f"\nMANUAL PRICE CSV ERROR\n{exc}", file=sys.stderr)
+        return 1
     except RuntimeError as exc:
         if "no local cache" in str(exc).lower() or "No price data" in str(exc):
             print("  No cache and no network — installing SAMPLE seed …")
@@ -46,10 +49,13 @@ def main() -> int:
             raise
 
     # 2) Fundamentals & consensus -----------------------------------------
-    print("\n[2/5] Fundamentals & analyst consensus (yfinance)")
+    print("\n[2/5] Fundamentals (manual CSV > yfinance) & consensus (yfinance)")
     for ticker in config.TICKERS:
         try:
             fetch.fetch_fundamentals(ticker, force=args.force)
+        except fetch.ManualDataError as exc:
+            print(f"\nMANUAL FUNDAMENTALS CSV ERROR\n{exc}", file=sys.stderr)
+            return 1
         except RuntimeError:
             print(f"  {ticker}: no fundamentals cache — installing SAMPLE seed …")
             from scripts.make_sample_seed import seed_fundamentals
